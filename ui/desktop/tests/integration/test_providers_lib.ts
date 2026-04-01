@@ -5,6 +5,7 @@
  * allowed-failure list, agentic-provider list, and environment detection.
  */
 
+import { test } from 'vitest';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -292,6 +293,59 @@ export function discoverTestCases(options?: { skipAgentic?: boolean }): TestCase
   }
 
   return testCases;
+}
+
+// ---------------------------------------------------------------------------
+// Test registration helpers
+// ---------------------------------------------------------------------------
+
+type ProviderTestFn = (tc: TestCase) => Promise<void>;
+
+function registerTests(label: string, cases: TestCase[], fn: ProviderTestFn): void {
+  const available = cases.filter((tc) => tc.available && !tc.flaky);
+  const flaky = cases.filter((tc) => tc.available && tc.flaky);
+  const skipped = cases.filter((tc) => !tc.available);
+
+  if (available.length > 0) {
+    test.each(available)(`${label} — $provider / $model`, async (tc) => {
+      await fn(tc);
+    });
+  }
+
+  if (flaky.length > 0) {
+    test.each(flaky)(`${label} — $provider / $model (flaky)`, async (tc) => {
+      try {
+        await fn(tc);
+      } catch (err) {
+        console.warn(`Flaky test ${tc.provider}/${tc.model} failed (allowed): ${err}`);
+      }
+    });
+  }
+
+  if (skipped.length > 0) {
+    test.skip.each(skipped)(`${label} — $provider / $model — $skippedReason`, () => {});
+  }
+}
+
+/**
+ * Build decorator-style test registrars from a set of discovered test cases.
+ *
+ * Usage:
+ *   const { testAll, testAgentic, testNonAgentic } = providerTest(cases);
+ *
+ *   testAll('reads a file', async (tc) => { ... });
+ *   testAgentic('delegates work', async (tc) => { ... });
+ *   testNonAgentic('uses shell tool', async (tc) => { ... });
+ */
+export function providerTest(cases: TestCase[]) {
+  const agentic = cases.filter((tc) => tc.agentic);
+  const nonAgentic = cases.filter((tc) => !tc.agentic);
+
+  return {
+    testAll: (label: string, fn: ProviderTestFn) => registerTests(label, cases, fn),
+    testAgentic: (label: string, fn: ProviderTestFn) => registerTests(label, agentic, fn),
+    testNonAgentic: (label: string, fn: ProviderTestFn) => registerTests(label, nonAgentic, fn),
+  };
 }
 
 // ---------------------------------------------------------------------------
