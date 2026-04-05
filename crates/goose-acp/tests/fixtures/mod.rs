@@ -7,9 +7,6 @@ pub use goose::acp::{map_permission_response, PermissionDecision, PermissionMapp
 use goose::builtin_extension::register_builtin_extensions;
 use goose::config::paths::Paths;
 use goose::config::{GooseMode, PermissionManager};
-use goose::providers::api_client::{ApiClient, AuthMethod as ApiAuthMethod};
-use goose::providers::base::Provider;
-use goose::providers::openai::OpenAiProvider;
 use goose::providers::provider_registry::ProviderConstructor;
 use goose::session_context::SESSION_ID_HEADER;
 use goose_acp::server::{serve, GooseAcpAgent};
@@ -151,11 +148,10 @@ pub async fn serve_agent_in_process(
 
 #[allow(dead_code)]
 pub async fn spawn_acp_server_in_process(
-    openai_base_url: &str,
     builtins: &[String],
     data_root: &std::path::Path,
     goose_mode: GooseMode,
-    provider_factory: Option<ProviderConstructor>,
+    provider_factory: ProviderConstructor,
     current_model: &str,
 ) -> (DuplexTransport, JoinHandle<()>, Arc<PermissionManager>) {
     fs::create_dir_all(data_root).unwrap();
@@ -169,20 +165,6 @@ pub async fn spawn_acp_server_in_process(
         )
         .unwrap();
     }
-    let provider_factory = provider_factory.unwrap_or_else(|| {
-        let base_url = openai_base_url.to_string();
-        Arc::new(move |model_config, _extensions| {
-            let base_url = base_url.clone();
-            Box::pin(async move {
-                let api_client =
-                    ApiClient::new(base_url, ApiAuthMethod::BearerToken("test-key".to_string()))
-                        .unwrap();
-                let provider: Arc<dyn Provider> =
-                    Arc::new(OpenAiProvider::new(api_client, model_config));
-                Ok(provider)
-            })
-        })
-    });
 
     let agent = GooseAcpAgent::new(
         provider_factory,
@@ -586,3 +568,4 @@ pub async fn send_custom(
 
 pub mod provider;
 pub mod server;
+pub mod server_to_llm;

@@ -122,6 +122,8 @@ enum AcpUpdate {
     Error(String),
 }
 
+pub type NotificationCallback = Arc<dyn Fn(SessionNotification) + Send + Sync>;
+
 pub struct AcpProvider {
     name: String,
     model: Mutex<ModelConfig>,
@@ -136,15 +138,13 @@ pub struct AcpProvider {
         Arc<TokioMutex<HashMap<String, oneshot::Sender<PermissionConfirmation>>>>,
     goose_to_acp_id: Arc<TokioMutex<HashMap<String, NewSessionResponse>>>,
     acp_to_goose_id: Arc<TokioMutex<HashMap<String, String>>>,
-    /// Per-session model tracking for detecting model changes in stream().
     session_model: Arc<TokioMutex<HashMap<String, String>>>,
     auth_methods: Vec<AuthMethod>,
     supports_close: bool,
     supports_list: bool,
-    // Cached NewSessionResponse for model list and config resolution.
-    // Populated from whichever comes first: ensure_session or get_init_session.
     init_session: OnceCell<NewSessionResponse>,
     session_titles: Arc<TokioMutex<HashMap<String, String>>>,
+    notification_callback: Arc<Mutex<NotificationCallback>>,
 }
 
 impl std::fmt::Debug for AcpProvider {
@@ -213,7 +213,7 @@ impl AcpProvider {
         name: String,
         model: ModelConfig,
         goose_mode: GooseMode,
-        config: AcpProviderConfig,
+        mut config: AcpProviderConfig,
         run: ClientLoopFn,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(32);
@@ -225,11 +225,18 @@ impl AcpProvider {
         let session_goose_modes = Arc::new(TokioMutex::new(HashMap::new()));
         let session_titles = Arc::new(TokioMutex::new(HashMap::new()));
         let acp_to_goose_id = Arc::new(TokioMutex::new(HashMap::new()));
+        let notification_callback = Arc::new(Mutex::new(
+            config
+                .notification_callback
+                .take()
+                .unwrap_or_else(|| Arc::new(|_| {})),
+        ));
         let client_loop = AcpClientLoop::new(
             config,
             goose_mode.clone(),
             session_goose_modes.clone(),
             acp_to_goose_id.clone(),
+            notification_callback.clone(),
         );
         let loop_thread = spawn_client_loop(run(client_loop, rx, init_tx));
 
@@ -255,6 +262,7 @@ impl AcpProvider {
             supports_list,
             session_titles,
             acp_to_goose_id,
+            notification_callback,
         );
         Ok(provider)
     }
@@ -275,6 +283,7 @@ impl AcpProvider {
         supports_list: bool,
         session_titles: Arc<TokioMutex<HashMap<String, String>>>,
         acp_to_goose_id: Arc<TokioMutex<HashMap<String, String>>>,
+        notification_callback: Arc<Mutex<NotificationCallback>>,
     ) -> Self {
         Self {
             name,
@@ -295,11 +304,16 @@ impl AcpProvider {
             supports_list,
             init_session: OnceCell::new(),
             session_titles,
+            notification_callback,
         }
     }
 
     pub fn auth_methods(&self) -> &[AuthMethod] {
         &self.auth_methods
+    }
+
+    pub fn set_notification_callback(&self, cb: NotificationCallback) {
+        *self.notification_callback.lock().unwrap() = cb;
     }
 
     pub async fn new_session(&self) -> Result<NewSessionResponse> {
@@ -355,7 +369,7 @@ impl AcpProvider {
         response_rx.await.context("ACP request cancelled")?
     }
 
-    pub(crate) async fn send_set_model(&self, goose_id: &str, model_id: String) -> Result<()> {
+    pub async fn send_set_model(&self, goose_id: &str, model_id: String) -> Result<()> {
         let session_id = self.resolve_acp_session_id(goose_id).await?;
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
@@ -371,7 +385,7 @@ impl AcpProvider {
         response_rx.await.context("ACP request cancelled")?
     }
 
-    pub(crate) async fn send_set_config_option(
+    pub async fn send_set_config_option(
         &self,
         goose_id: &str,
         config_id: String,
@@ -413,6 +427,29 @@ impl AcpProvider {
         Ok(())
     }
 
+    pub async fn close_session(&self, goose_id: &str) -> Result<()> {
+        let acp_session_id = {
+            let mut map = self.goose_to_acp_id.lock().await;
+            match map.remove(goose_id) {
+                Some(response) => response.session_id,
+                None => return Ok(()),
+            }
+        };
+
+        self.acp_to_goose_id
+            .lock()
+            .await
+            .remove(acp_session_id.0.as_ref());
+        self.session_model.lock().await.remove(goose_id);
+        self.session_goose_modes.lock().await.remove(goose_id);
+        self.session_titles.lock().await.remove(goose_id);
+
+        if self.supports_close {
+            self.close_session_by_acp_id(acp_session_id).await?;
+        }
+        Ok(())
+    }
+
     pub async fn send_untyped(
         &self,
         method: &str,
@@ -437,7 +474,7 @@ impl AcpProvider {
     }
 
     // If false, callers fall back to legacy set_mode/set_model.
-    async fn session_has_config_option(
+    pub async fn session_has_config_option(
         &self,
         goose_id: &str,
         category: SessionConfigOptionCategory,
@@ -835,6 +872,7 @@ struct AcpClientLoop {
     session_goose_modes: Arc<TokioMutex<HashMap<String, GooseMode>>>,
     acp_to_goose_id: Arc<TokioMutex<HashMap<String, String>>>,
     prompt_response_tx: Arc<Mutex<Option<mpsc::Sender<AcpUpdate>>>>,
+    notification_callback: Arc<Mutex<NotificationCallback>>,
 }
 
 impl AcpClientLoop {
@@ -843,6 +881,7 @@ impl AcpClientLoop {
         goose_mode: Arc<Mutex<GooseMode>>,
         session_goose_modes: Arc<TokioMutex<HashMap<String, GooseMode>>>,
         acp_to_goose_id: Arc<TokioMutex<HashMap<String, String>>>,
+        notification_callback: Arc<Mutex<NotificationCallback>>,
     ) -> Self {
         Self {
             config,
@@ -850,6 +889,7 @@ impl AcpClientLoop {
             session_goose_modes,
             acp_to_goose_id,
             prompt_response_tx: Arc::new(Mutex::new(None)),
+            notification_callback,
         }
     }
 
@@ -897,8 +937,8 @@ impl AcpClientLoop {
             session_goose_modes,
             acp_to_goose_id,
             prompt_response_tx,
+            notification_callback,
         } = self;
-        let notification_callback = config.notification_callback.clone();
         let reverse_modes = reverse_mode_mapping(&config.mode_mapping);
 
         Client
@@ -911,9 +951,7 @@ impl AcpClientLoop {
                     let session_goose_modes = session_goose_modes.clone();
                     let acp_to_goose_id = acp_to_goose_id.clone();
                     async move |notification: SessionNotification, _cx| {
-                        if let Some(ref cb) = notification_callback {
-                            cb(notification.clone());
-                        }
+                        notification_callback.lock().unwrap()(notification.clone());
                         let resolved_mode = match &notification.update {
                             SessionUpdate::CurrentModeUpdate(update) => resolve_mode(
                                 &reverse_modes,

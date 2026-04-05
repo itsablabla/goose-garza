@@ -62,12 +62,13 @@ struct GooseAcpSession {
     messages: Conversation,
     tool_requests: HashMap<String, goose::conversation::message::ToolRequest>,
     cancel_token: Option<CancellationToken>,
+    acp_provider: Option<Arc<AcpProvider>>,
 }
 
 pub struct GooseAcpAgent {
     sessions: Arc<Mutex<HashMap<String, GooseAcpSession>>>,
     provider_factory: ProviderConstructor,
-    provider: Mutex<Option<Arc<dyn Provider>>>,
+    provider: OnceCell<Arc<dyn Provider>>,
     builtins: Vec<String>,
     client_fs_capabilities: OnceCell<FileSystemCapabilities>,
     client_terminal: OnceCell<bool>,
@@ -76,6 +77,7 @@ pub struct GooseAcpAgent {
     permission_manager: Arc<PermissionManager>,
     goose_mode: GooseMode,
     disable_session_naming: bool,
+    acp_session_map: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 fn mcp_server_to_extension_config(mcp_server: McpServer) -> Result<ExtensionConfig, String> {
@@ -320,12 +322,12 @@ async fn session_model_state(
     provider: &dyn Provider,
     model_override: Option<&str>,
 ) -> Result<SessionModelState, sacp::Error> {
-    let default_model = provider.get_model_config().model_name;
-    let current_model = model_override.unwrap_or(&default_model);
     let models = provider
         .fetch_recommended_models()
         .await
         .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+    let default_model = provider.get_model_config().model_name;
+    let current_model = model_override.unwrap_or(&default_model);
     Ok(SessionModelState::new(
         ModelId::new(current_model),
         models
@@ -407,7 +409,7 @@ impl GooseAcpAgent {
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             provider_factory,
-            provider: Mutex::new(None),
+            provider: OnceCell::new(),
             builtins,
             client_fs_capabilities: OnceCell::new(),
             client_terminal: OnceCell::new(),
@@ -416,6 +418,7 @@ impl GooseAcpAgent {
             permission_manager,
             goose_mode,
             disable_session_naming,
+            acp_session_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -520,6 +523,22 @@ impl GooseAcpAgent {
         }
 
         Ok(agent)
+    }
+
+    // Remaps downstream ACP session IDs to goose session IDs and forwards notifications to the SACP client.
+    fn install_notification_forwarder(&self, acp: &Arc<AcpProvider>, cx: &ConnectionTo<Client>) {
+        let cx = cx.clone();
+        let map = self.acp_session_map.clone();
+        acp.set_notification_callback(Arc::new(move |notification: SessionNotification| {
+            let map = map.lock().unwrap();
+            if let Some(goose_sid) = map.get(notification.session_id.0.as_ref()) {
+                let remapped = SessionNotification::new(
+                    SessionId::new(goose_sid.clone()),
+                    notification.update,
+                );
+                let _ = cx.send_notification(remapped);
+            }
+        }));
     }
 
     pub async fn has_session(&self, session_id: &str) -> bool {
@@ -890,14 +909,19 @@ impl GooseAcpAgent {
 
         Self::add_mcp_extensions(&agent, args.mcp_servers, &goose_session.id).await?;
 
-        // ensure_session creates the downstream ACP session now, so
-        // session_model_state's fetch_recommended_models hits the cache.
-        if let Ok(acp) = provider.clone().downcast_arc::<AcpProvider>() {
-            acp.ensure_session(Some(&goose_session.id))
+        let acp_provider = provider.clone().downcast_arc::<AcpProvider>().ok();
+        if let Some(ref acp) = acp_provider {
+            let acp_response = acp
+                .ensure_session(Some(&goose_session.id))
                 .await
                 .map_err(|e| {
                     sacp::Error::internal_error().data(format!("Failed to ensure session: {}", e))
                 })?;
+            self.install_notification_forwarder(acp, cx);
+            self.acp_session_map.lock().unwrap().insert(
+                acp_response.session_id.0.to_string(),
+                goose_session.id.clone(),
+            );
         }
 
         let session = GooseAcpSession {
@@ -905,6 +929,7 @@ impl GooseAcpAgent {
             messages: Conversation::new_unvalidated(Vec::new()),
             tool_requests: HashMap::new(),
             cancel_token: None,
+            acp_provider,
         };
 
         let mut sessions = self.sessions.lock().await;
@@ -927,25 +952,25 @@ impl GooseAcpAgent {
     }
 
     async fn init_provider(&self, agent: &Agent, session: &Session) -> Result<Arc<dyn Provider>> {
-        let mut cached = self.provider.lock().await;
-        if let Some(provider) = cached.as_ref() {
-            agent.update_provider(provider.clone(), &session.id).await?;
-            return Ok(provider.clone());
-        }
-        let model_config = match &session.model_config {
-            Some(config) => config.clone(),
-            None => {
-                let config_path = self.config_dir.join(CONFIG_YAML_NAME);
-                let config = Config::new(&config_path, "goose")?;
-                let model_id = config.get_goose_model()?;
-                let provider_name = config.get_goose_provider()?;
-                goose::model::ModelConfig::new(&model_id)?.with_canonical_limits(&provider_name)
-            }
-        };
-        let provider = (self.provider_factory)(model_config, Vec::new()).await?;
+        let provider = self
+            .provider
+            .get_or_try_init(|| async {
+                let model_config = match &session.model_config {
+                    Some(config) => config.clone(),
+                    None => {
+                        let config_path = self.config_dir.join(CONFIG_YAML_NAME);
+                        let config = Config::new(&config_path, "goose")?;
+                        let model_id = config.get_goose_model()?;
+                        let provider_name = config.get_goose_provider()?;
+                        goose::model::ModelConfig::new(&model_id)?
+                            .with_canonical_limits(&provider_name)
+                    }
+                };
+                (self.provider_factory)(model_config, Vec::new()).await
+            })
+            .await?;
         agent.update_provider(provider.clone(), &session.id).await?;
-        *cached = Some(provider.clone());
-        Ok(provider)
+        Ok(provider.clone())
     }
 
     async fn get_session_agent(
@@ -1052,11 +1077,23 @@ impl GooseAcpAgent {
                     .data(format!("Failed to update session working directory: {}", e))
             })?;
 
+        let acp_provider = provider.clone().downcast_arc::<AcpProvider>().ok();
+        if let Some(ref acp) = acp_provider {
+            let acp_response = acp.ensure_session(Some(&session_id)).await.map_err(|e| {
+                sacp::Error::internal_error().data(format!("Failed to ensure session: {}", e))
+            })?;
+            self.install_notification_forwarder(acp, cx);
+            self.acp_session_map
+                .lock()
+                .unwrap()
+                .insert(acp_response.session_id.0.to_string(), session_id.clone());
+        }
         let mut session = GooseAcpSession {
             agent,
             messages: conversation.clone(),
             tool_requests: HashMap::new(),
             cancel_token: None,
+            acp_provider,
         };
 
         for message in conversation.messages() {
@@ -1179,8 +1216,17 @@ impl GooseAcpAgent {
                     session.messages.push(message.clone());
 
                     for content_item in &message.content {
-                        self.handle_message_content(content_item, &args.session_id, session, cx)
+                        if session.acp_provider.is_none()
+                            || matches!(content_item, MessageContent::ActionRequired(_))
+                        {
+                            self.handle_message_content(
+                                content_item,
+                                &args.session_id,
+                                session,
+                                cx,
+                            )
                             .await?;
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -1226,31 +1272,64 @@ impl GooseAcpAgent {
         session_id: &str,
         model_id: &str,
     ) -> Result<SetSessionModelResponse, sacp::Error> {
-        let config_path = self.config_dir.join(CONFIG_YAML_NAME);
-        let config = Config::new(&config_path, "goose").map_err(|e| {
-            sacp::Error::internal_error().data(format!("Failed to read config: {}", e))
-        })?;
-        let provider_name = config.get_goose_provider().map_err(|_| {
-            sacp::Error::internal_error().data("No provider configured".to_string())
-        })?;
-        let model_config = goose::model::ModelConfig::new(model_id)
-            .map_err(|e| {
-                sacp::Error::invalid_params().data(format!("Invalid model config: {}", e))
-            })?
-            .with_canonical_limits(&provider_name);
-        let provider = (self.provider_factory)(model_config, Vec::new())
+        let acp_provider = self
+            .sessions
+            .lock()
             .await
-            .map_err(|e| {
-                sacp::Error::internal_error().data(format!("Failed to create provider: {}", e))
-            })?;
+            .get(session_id)
+            .and_then(|s| s.acp_provider.clone());
 
-        let agent = self.get_session_agent(session_id, None).await?;
-        agent
-            .update_provider(provider, session_id)
-            .await
+        if let Some(acp) = acp_provider {
+            if acp
+                .session_has_config_option(
+                    session_id,
+                    sacp::schema::SessionConfigOptionCategory::Model,
+                )
+                .await
+            {
+                acp.send_set_config_option(session_id, "model".into(), model_id.to_string())
+                    .await
+            } else {
+                acp.send_set_model(session_id, model_id.to_string()).await
+            }
             .map_err(|e| {
-                sacp::Error::internal_error().data(format!("Failed to update provider: {}", e))
+                sacp::Error::internal_error().data(format!("Failed to set model: {}", e))
             })?;
+            let model_config = goose::model::ModelConfig::new(model_id)
+                .map_err(|e| sacp::Error::invalid_params().data(format!("Invalid model: {}", e)))?;
+            self.session_manager
+                .update(session_id)
+                .model_config(model_config)
+                .apply()
+                .await
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        } else {
+            let config_path = self.config_dir.join(CONFIG_YAML_NAME);
+            let config = Config::new(&config_path, "goose").map_err(|e| {
+                sacp::Error::internal_error().data(format!("Failed to read config: {}", e))
+            })?;
+            let provider_name = config.get_goose_provider().map_err(|_| {
+                sacp::Error::internal_error().data("No provider configured".to_string())
+            })?;
+            let model_config = goose::model::ModelConfig::new(model_id)
+                .map_err(|e| {
+                    sacp::Error::invalid_params().data(format!("Invalid model config: {}", e))
+                })?
+                .with_canonical_limits(&provider_name);
+            let provider = (self.provider_factory)(model_config, Vec::new())
+                .await
+                .map_err(|e| {
+                    sacp::Error::internal_error().data(format!("Failed to create provider: {}", e))
+                })?;
+
+            let agent = self.get_session_agent(session_id, None).await?;
+            agent
+                .update_provider(provider, session_id)
+                .await
+                .map_err(|e| {
+                    sacp::Error::internal_error().data(format!("Failed to update provider: {}", e))
+                })?;
+        }
 
         info!(session_id = %session_id, model_id = %model_id, "Model switched");
         Ok(SetSessionModelResponse::new())
@@ -1316,14 +1395,28 @@ impl GooseAcpAgent {
         &self,
         session_id: &str,
     ) -> Result<CloseSessionResponse, sacp::Error> {
-        let mut sessions = self.sessions.lock().await;
         // Cancel before removing so on_prompt sees cancellation before session disappears.
+        let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
             if let Some(ref token) = session.cancel_token {
                 token.cancel();
             }
         }
-        sessions.remove(session_id);
+        let removed = sessions.remove(session_id);
+        drop(sessions);
+
+        if let Some(session) = removed {
+            if let Some(ref acp) = session.acp_provider {
+                self.acp_session_map
+                    .lock()
+                    .unwrap()
+                    .retain(|_, goose_id| goose_id != session_id);
+                if let Err(e) = acp.close_session(session_id).await {
+                    tracing::debug!(session_id, error = %e, "failed to close downstream ACP session");
+                }
+            }
+        }
+
         info!(session_id = %session_id, "session closed");
         Ok(CloseSessionResponse::new())
     }
@@ -1593,7 +1686,12 @@ impl HandleDispatchFrom<Client> for GooseAcpHandler {
                             }
                         }
                         let (notification, config_options) = agent.build_config_update(&session_id).await?;
-                        cx.send_notification(notification)?;
+                        let send = agent.sessions.lock().await
+                            .get(&*session_id.0)
+                            .is_none_or(|s| s.acp_provider.is_none());
+                        if send {
+                            cx.send_notification(notification)?;
+                        }
                         responder.respond(SetSessionConfigOptionResponse::new(config_options))?;
                         Ok(())
                     }
@@ -1608,12 +1706,17 @@ impl HandleDispatchFrom<Client> for GooseAcpHandler {
                         match agent.on_set_mode(&session_id.0, &mode_id.0).await {
                             Ok(resp) => {
                                 // Notify before responding so clients see the mode update before block_task unblocks.
-                                cx.send_notification(SessionNotification::new(
-                                    session_id,
-                                    SessionUpdate::CurrentModeUpdate(
-                                        CurrentModeUpdate::new(mode_id),
-                                    ),
-                                ))?;
+                                let send = agent.sessions.lock().await
+                                    .get(&*session_id.0)
+                                    .is_none_or(|s| s.acp_provider.is_none());
+                                if send {
+                                    cx.send_notification(SessionNotification::new(
+                                        session_id,
+                                        SessionUpdate::CurrentModeUpdate(
+                                            CurrentModeUpdate::new(mode_id),
+                                        ),
+                                    ))?;
+                                }
                                 responder.respond(resp)?;
                             }
                             Err(e) => {
@@ -1631,8 +1734,13 @@ impl HandleDispatchFrom<Client> for GooseAcpHandler {
                         let session_id = req.session_id.clone();
                         match agent.on_set_model(&session_id.0, &req.model_id.0).await {
                             Ok(resp) => {
-                                let (notification, _) = agent.build_config_update(&session_id).await?;
-                                cx.send_notification(notification)?;
+                                let send = agent.sessions.lock().await
+                                    .get(&*session_id.0)
+                                    .is_none_or(|s| s.acp_provider.is_none());
+                                if send {
+                                    let (notification, _) = agent.build_config_update(&session_id).await?;
+                                    cx.send_notification(notification)?;
+                                }
                                 responder.respond(resp)?;
                             }
                             Err(e) => responder.respond_with_error(e)?,
@@ -1884,6 +1992,7 @@ print(\"hello, world\")
 
     struct MockModelProvider {
         models: Result<Vec<String>, ProviderError>,
+        resolved_model: Option<Arc<std::sync::Mutex<String>>>,
     }
 
     #[async_trait::async_trait]
@@ -1904,16 +2013,27 @@ print(\"hello, world\")
         }
 
         fn get_model_config(&self) -> goose::model::ModelConfig {
-            goose::model::ModelConfig::new_or_fail("unused")
+            let name = self
+                .resolved_model
+                .as_ref()
+                .map(|m| m.lock().unwrap().clone())
+                .unwrap_or_else(|| "unused".to_string());
+            goose::model::ModelConfig::new_or_fail(&name)
         }
 
         async fn fetch_recommended_models(&self) -> Result<Vec<String>, ProviderError> {
-            self.models.clone()
+            let result = self.models.clone()?;
+            if let Some(ref resolved) = self.resolved_model {
+                if let Some(first) = result.first() {
+                    *resolved.lock().unwrap() = first.clone();
+                }
+            }
+            Ok(result)
         }
     }
 
     #[test_case(
-        Ok(vec!["model-a".into(), "model-b".into()]), None
+        Ok(vec!["model-a".into(), "model-b".into()]), None, None
         => Ok(SessionModelState::new(
             ModelId::new("unused"),
             vec![ModelInfo::new(ModelId::new("model-a"), "model-a"),
@@ -1922,7 +2042,7 @@ print(\"hello, world\")
         ; "defaults to provider model"
     )]
     #[test_case(
-        Ok(vec!["model-a".into(), "model-b".into()]), Some("model-b")
+        Ok(vec!["model-a".into(), "model-b".into()]), Some("model-b"), None
         => Ok(SessionModelState::new(
             ModelId::new("model-b"),
             vec![ModelInfo::new(ModelId::new("model-a"), "model-a"),
@@ -1931,21 +2051,34 @@ print(\"hello, world\")
         ; "override replaces provider model"
     )]
     #[test_case(
-        Ok(vec![]), None
+        Ok(vec![]), None, None
         => Ok(SessionModelState::new(ModelId::new("unused"), vec![]))
         ; "empty model list"
     )]
     #[test_case(
-        Err(ProviderError::ExecutionError("fail".into())), None
+        Err(ProviderError::ExecutionError("fail".into())), None, None
         => Err(sacp::Error::internal_error().data("Execution error: fail".to_string()))
         ; "fetch error propagates"
+    )]
+    #[test_case(
+        Ok(vec!["resolved-model".into()]), None,
+        Some(Arc::new(std::sync::Mutex::new("unresolved".into())))
+        => Ok(SessionModelState::new(
+            ModelId::new("resolved-model"),
+            vec![ModelInfo::new(ModelId::new("resolved-model"), "resolved-model")],
+        ))
+        ; "lazy resolution reads model after fetch"
     )]
     #[tokio::test]
     async fn test_session_model_state(
         models: Result<Vec<String>, ProviderError>,
         model_override: Option<&str>,
+        resolved_model: Option<Arc<std::sync::Mutex<String>>>,
     ) -> Result<SessionModelState, sacp::Error> {
-        let provider = MockModelProvider { models };
+        let provider = MockModelProvider {
+            models,
+            resolved_model,
+        };
         session_model_state(&provider, model_override).await
     }
 

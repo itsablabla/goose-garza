@@ -111,12 +111,14 @@ impl Connection for AcpServerConnection {
             false => (config.data_root.clone(), None),
         };
 
+        let provider_factory = config
+            .provider_factory
+            .unwrap_or_else(|| super::server_to_llm::llm_provider_factory(openai.uri()));
         let (transport, _handle, permission_manager) = spawn_acp_server_in_process(
-            openai.uri(),
             &config.builtins,
             data_root.as_path(),
             config.goose_mode,
-            config.provider_factory,
+            provider_factory,
             &config.current_model,
         )
         .await;

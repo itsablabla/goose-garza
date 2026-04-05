@@ -11,6 +11,7 @@ use goose::model::ModelConfig;
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
 use goose::providers::base::Provider;
+use goose::providers::provider_registry::ProviderConstructor;
 use goose_test_support::{ExpectedSessionId, IgnoreSessionId, TEST_MODEL};
 use sacp::schema::{AuthMethod, ListSessionsResponse, McpServer, SessionUpdate, ToolCallStatus};
 use sacp::{Channel, Client, ConnectTo, DynConnectTo};
@@ -23,10 +24,73 @@ use tokio::sync::Mutex;
 pub type NotificationSink = Arc<std::sync::Mutex<Vec<SessionUpdate>>>;
 type SessionModels = Arc<std::sync::Mutex<HashMap<String, ModelConfig>>>;
 
+#[allow(dead_code, clippy::too_many_arguments)]
+pub async fn acp_provider_factory(
+    openai: &OpenAiFixture,
+    builtins: &[String],
+    data_root: &std::path::Path,
+    goose_mode: GooseMode,
+    provider_factory: Option<ProviderConstructor>,
+    current_model: &str,
+    cwd_path: &std::path::Path,
+    mcp_servers: Vec<McpServer>,
+    strip_config_options: bool,
+    notification_sink: NotificationSink,
+) -> (AcpProvider, Arc<PermissionManager>) {
+    let inner_factory = provider_factory
+        .unwrap_or_else(|| super::server_to_llm::llm_provider_factory(openai.uri()));
+    let (transport, _handle, permission_manager) = spawn_acp_server_in_process(
+        builtins,
+        data_root,
+        goose_mode,
+        inner_factory,
+        current_model,
+    )
+    .await;
+
+    let sink_clone = notification_sink.clone();
+    let provider_config = AcpProviderConfig {
+        command: "unused".into(),
+        args: vec![],
+        env: vec![],
+        env_remove: vec![],
+        work_dir: cwd_path.to_path_buf(),
+        mcp_servers,
+        session_mode_id: None,
+        mode_mapping: GooseMode::VARIANTS
+            .iter()
+            .map(|v| {
+                let mode = GooseMode::from_str(v).unwrap();
+                (mode, mode.to_string())
+            })
+            .collect(),
+        permission_mapping: PermissionMapping::default(),
+        notification_callback: Some(Arc::new(move |n| {
+            sink_clone.lock().unwrap().push(n.update.clone());
+        })),
+    };
+
+    let transport: DynConnectTo<Client> = if strip_config_options {
+        DynConnectTo::new(strip_config_options_filter(transport))
+    } else {
+        DynConnectTo::new(transport)
+    };
+    let provider = AcpProvider::connect_with_transport(
+        "acp-test".to_string(),
+        ModelConfig::new(TEST_MODEL).unwrap(),
+        goose_mode,
+        provider_config,
+        transport,
+    )
+    .await
+    .unwrap();
+
+    (provider, permission_manager)
+}
+
 #[allow(dead_code)]
 pub struct AcpProviderConnection {
-    /// Option so close_session can trigger session/close via Drop.
-    provider: Arc<Mutex<Option<AcpProvider>>>,
+    provider: Arc<Mutex<AcpProvider>>,
     permission_manager: Arc<PermissionManager>,
     auth_methods: Vec<AuthMethod>,
     session_counter: usize,
@@ -41,7 +105,7 @@ pub struct AcpProviderConnection {
 
 #[allow(dead_code)]
 pub struct AcpProviderSession {
-    provider: Arc<Mutex<Option<AcpProvider>>>,
+    provider: Arc<Mutex<AcpProvider>>,
     session_id: sacp::schema::SessionId,
     notification_sink: NotificationSink,
     session_models: SessionModels,
@@ -64,8 +128,7 @@ impl AcpProviderSession {
         decision: PermissionDecision,
     ) -> anyhow::Result<TestOutput> {
         let session_id = self.session_id.0.clone();
-        let guard = self.provider.lock().await;
-        let provider = guard.as_ref().unwrap();
+        let provider = self.provider.lock().await;
         self.notification_sink.lock().unwrap().clear();
         let model_config = self
             .session_models
@@ -148,20 +211,6 @@ impl Connection for AcpProviderConnection {
             false => (config.data_root.clone(), None),
         };
 
-        let goose_mode = config.goose_mode;
-        let mcp_servers = config.mcp_servers;
-
-        let current_model = config.current_model.clone();
-        let (transport, _handle, permission_manager) = spawn_acp_server_in_process(
-            openai.uri(),
-            &config.builtins,
-            data_root.as_path(),
-            goose_mode,
-            config.provider_factory,
-            &current_model,
-        )
-        .await;
-
         let cwd_path = config
             .cwd
             .as_ref()
@@ -170,48 +219,25 @@ impl Connection for AcpProviderConnection {
 
         let notification_sink: NotificationSink = Arc::new(std::sync::Mutex::new(Vec::new()));
         let session_models: SessionModels = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let sink_clone = notification_sink.clone();
-        let provider_config = AcpProviderConfig {
-            command: "unused".into(),
-            args: vec![],
-            env: vec![],
-            env_remove: vec![],
-            work_dir: cwd_path.clone(),
-            mcp_servers,
-            session_mode_id: None,
-            mode_mapping: GooseMode::VARIANTS
-                .iter()
-                .map(|v| {
-                    let mode = GooseMode::from_str(v).unwrap();
-                    (mode, mode.to_string())
-                })
-                .collect(),
-            permission_mapping: PermissionMapping::default(),
-            notification_callback: Some(Arc::new(move |n| {
-                sink_clone.lock().unwrap().push(n.update.clone());
-            })),
-        };
 
-        // Server always advertises both configOptions and legacy; only the client fallback needs testing.
-        let transport: DynConnectTo<Client> = if config.strip_config_options {
-            DynConnectTo::new(strip_config_options(transport))
-        } else {
-            DynConnectTo::new(transport)
-        };
-        let provider = AcpProvider::connect_with_transport(
-            "acp-test".to_string(),
-            ModelConfig::new(TEST_MODEL).unwrap(),
-            goose_mode,
-            provider_config,
-            transport,
+        let (provider, permission_manager) = acp_provider_factory(
+            &openai,
+            &config.builtins,
+            data_root.as_path(),
+            config.goose_mode,
+            config.provider_factory,
+            &config.current_model,
+            &cwd_path,
+            config.mcp_servers,
+            config.strip_config_options,
+            notification_sink.clone(),
         )
-        .await
-        .unwrap();
+        .await;
 
         let auth_methods = provider.auth_methods().to_vec();
 
         Self {
-            provider: Arc::new(Mutex::new(Some(provider))),
+            provider: Arc::new(Mutex::new(provider)),
             permission_manager,
             auth_methods,
             session_counter: 0,
@@ -234,8 +260,6 @@ impl Connection for AcpProviderConnection {
             .provider
             .lock()
             .await
-            .as_ref()
-            .unwrap()
             .ensure_session(Some(&goose_id))
             .await?;
 
@@ -264,29 +288,15 @@ impl Connection for AcpProviderConnection {
     }
 
     async fn list_sessions(&self) -> anyhow::Result<ListSessionsResponse> {
-        self.provider
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .list_sessions()
-            .await
+        self.provider.lock().await.list_sessions().await
     }
 
-    async fn close_session(&self, _session_id: &str) -> anyhow::Result<()> {
-        // ACP close exists but SessionManager isn't integrated with it; drop the provider instead.
-        self.provider.lock().await.take();
-        Ok(())
+    async fn close_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.provider.lock().await.close_session(session_id).await
     }
 
     async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.provider
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .delete_session(session_id)
-            .await
+        self.provider.lock().await.delete_session(session_id).await
     }
 
     fn data_root(&self) -> std::path::PathBuf {
@@ -296,8 +306,7 @@ impl Connection for AcpProviderConnection {
     async fn set_mode(&self, session_id: &str, mode_id: &str) -> anyhow::Result<()> {
         let mode = GooseMode::from_str(mode_id)
             .map_err(|_| sacp::Error::invalid_params().data(format!("Invalid mode: {mode_id}")))?;
-        let guard = self.provider.lock().await;
-        let provider = guard.as_ref().unwrap();
+        let provider = self.provider.lock().await;
         if !provider.has_session(session_id).await {
             return Err(
                 sacp::Error::resource_not_found(Some(session_id.to_string()))
@@ -327,8 +336,7 @@ impl Connection for AcpProviderConnection {
         value: &str,
     ) -> anyhow::Result<()> {
         // Check up front because the "model" branch doesn't go through the provider.
-        let guard = self.provider.lock().await;
-        let provider = guard.as_ref().unwrap();
+        let provider = self.provider.lock().await;
         if !provider.has_session(session_id).await {
             return Err(
                 sacp::Error::resource_not_found(Some(session_id.to_string()))
@@ -414,7 +422,7 @@ impl Session for AcpProviderSession {
 
 // Strips config_options from responses so goose falls back to legacy set_mode/set_model.
 #[allow(dead_code)]
-fn strip_config_options(transport: DuplexTransport) -> Channel {
+fn strip_config_options_filter(transport: DuplexTransport) -> Channel {
     let (server, server_future) = ConnectTo::<Client>::into_channel_and_future(transport);
     let (client_channel, filter) = Channel::duplex();
 
