@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
-import TextInput from "ink-text-input";
+import { MultilineInput } from "ink-multiline-input";
 import meow from "meow";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -178,6 +178,13 @@ function Header({
   );
 }
 
+const MAX_INPUT_ROWS = 5;
+
+function countInputLines(text: string): number {
+  if (!text) return 1;
+  return Math.max(1, Math.min(text.split("\n").length, MAX_INPUT_ROWS));
+}
+
 function InputBar({
   width,
   input,
@@ -195,6 +202,9 @@ function InputBar({
   scrollHint: boolean;
   placeholder?: string;
 }) {
+  const inputLines = countInputLines(input);
+  const isMultiline = input.includes("\n");
+
   return (
     <Box
       flexDirection="column"
@@ -204,18 +214,34 @@ function InputBar({
       width={width}
       flexShrink={0}
     >
-      <Box justifyContent="space-between">
+      <Box>
         <Box flexGrow={1}>
-          <Text color={CRANBERRY} bold>{"❯ "}</Text>
-          <TextInput
+          <Box flexShrink={0}>
+            <Text color={CRANBERRY} bold>{"❯ "}</Text>
+          </Box>
+          <MultilineInput
             value={input}
             onChange={onChange}
             onSubmit={onSubmit}
-            placeholder={placeholder}
+            rows={1}
+            maxRows={MAX_INPUT_ROWS}
+            placeholder={placeholder ?? ""}
+            showCursor={true}
+            focus={true}
+            keyBindings={{
+              submit: (key) => key.return && !key.shift,
+              newline: (key) => key.return && key.shift,
+            }}
           />
         </Box>
-        {scrollHint && <Text color={TEXT_DIM}>shift+↑↓ history</Text>}
+        {inputLines <= 1 && scrollHint && <Text color={TEXT_DIM}>shift+↑↓ history</Text>}
       </Box>
+      {isMultiline && (
+        <Box justifyContent="space-between">
+          <Text color={TEXT_DIM}>shift+enter newline</Text>
+          {scrollHint && <Text color={TEXT_DIM}>shift+↑↓ history</Text>}
+        </Box>
+      )}
       {queued && (
         <Box>
           <Text color={GOLD} dimColor italic>
@@ -426,7 +452,7 @@ function Viewport({
     elements.push(
       <Box key="si-up" width={width} height={1} justifyContent="center">
         {above > 0
-          ? <Text color={TEXT_DIM}>▲ {above} more (↑)</Text>
+          ? <Text color={TEXT_DIM}>▲ {above} more (pgUp)</Text>
           : <Text> </Text>}
       </Box>,
     );
@@ -442,7 +468,7 @@ function Viewport({
     elements.push(
       <Box key="si-dn" width={width} height={1} justifyContent="center">
         {below > 0
-          ? <Text color={TEXT_DIM}>▼ {below} more (↓)</Text>
+          ? <Text color={TEXT_DIM}>▼ {below} more (pgDn)</Text>
           : <Text> </Text>}
       </Box>,
     );
@@ -827,11 +853,11 @@ function App({
       return;
     }
 
-    if (key.upArrow && !key.shift) {
+    if (key.pageUp || (key.upArrow && key.ctrl)) {
       setScrollOffset((prev) => prev + 3);
       return;
     }
-    if (key.downArrow && !key.shift) {
+    if (key.pageDown || (key.downArrow && key.ctrl)) {
       setScrollOffset((prev) => Math.max(prev - 3, 0));
       return;
     }
@@ -872,7 +898,11 @@ function App({
   const showInputBar = !pendingPermission && !initialPrompt && !isViewingHistory;
 
   const headerH = 2;
-  const inputBarH = showInputBar ? (queuedMessages.length > 0 ? 4 : 3) : 0;
+  const inputLines = countInputLines(input);
+  const isMultiline = input.includes("\n");
+  const inputBarBorder = 2;
+  const inputBarContent = inputLines + (isMultiline ? 1 : 0) + (queuedMessages.length > 0 ? 1 : 0);
+  const inputBarH = showInputBar ? inputBarBorder + inputBarContent : 0;
   const historyBarH = isViewingHistory ? 2 : 0;
   const viewportHeight = Math.max(
     termHeight - PAD_Y * 2 - headerH - inputBarH - historyBarH,
