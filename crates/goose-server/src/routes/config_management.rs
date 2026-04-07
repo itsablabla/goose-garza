@@ -498,33 +498,6 @@ pub async fn get_canonical_model_info(
 
 #[utoipa::path(
     post,
-    path = "/config/init",
-    responses(
-        (status = 200, description = "Config initialization check completed", body = String),
-        (status = 500, description = "Internal server error")
-    )
-)]
-pub async fn init_config() -> Result<Json<String>, ErrorResponse> {
-    let config = Config::global();
-
-    if config.exists() {
-        return Ok(Json("Config already exists".to_string()));
-    }
-
-    // Use the shared function to load init-config.yaml
-    match goose::config::base::load_init_config_from_workspace() {
-        Ok(init_values) => {
-            config.initialize_if_empty(init_values)?;
-            Ok(Json("Config initialized successfully".to_string()))
-        }
-        Err(_) => Ok(Json(
-            "No init-config.yaml found, using default configuration".to_string(),
-        )),
-    }
-}
-
-#[utoipa::path(
-    post,
     path = "/config/permissions",
     request_body = UpsertPermissionsQuery,
     responses(
@@ -870,7 +843,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/config/canonical-model-info",
             post(get_canonical_model_info),
         )
-        .route("/config/init", post(init_config))
         .route("/config/validate", get(validate_config))
         .route("/config/permissions", post(upsert_permissions))
         .route("/config/custom-providers", post(create_custom_provider))
