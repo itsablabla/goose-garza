@@ -3,6 +3,7 @@ import { Input } from '../../../../../ui/input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
+import { configLabels, configPlaceholders } from '../../../../../../utils/configUtils';
 import { defineMessages, useIntl } from '../../../../../../i18n';
 
 const i18n = defineMessages({
@@ -138,6 +139,7 @@ export default function DefaultProviderSetupForm({
       return parameter.default;
     }
 
+    if (configPlaceholders[parameter.name]) return configPlaceholders[parameter.name];
     const name = parameter.name.toLowerCase();
     if (name.includes('api_key')) return intl.formatMessage(i18n.apiKeyPlaceholder);
     if (name.includes('api_url') || name.includes('host'))
@@ -151,6 +153,7 @@ export default function DefaultProviderSetupForm({
   };
 
   const getFieldLabel = (parameter: ConfigKey) => {
+    if (configLabels[parameter.name]) return configLabels[parameter.name];
     const name = parameter.name.toLowerCase();
     if (name.includes('api_key')) return intl.formatMessage(i18n.apiKeyLabel);
     if (name.includes('api_url') || name.includes('host'))
