@@ -121,8 +121,10 @@ impl From<keyring::Error> for ConfigError {
 ///
 /// For goose-specific configuration, consider prefixing with "goose_" to avoid conflicts.
 pub struct Config {
-    config_path: PathBuf,
-    defaults_path: Option<PathBuf>,
+    /// Ordered list of config files to load and merge.
+    /// Later entries take precedence over earlier ones.
+    /// The last entry is where changes will be written.
+    config_paths: Vec<PathBuf>,
     secrets: SecretStorage,
     guard: Mutex<()>,
     secrets_cache: Arc<Mutex<Option<HashMap<String, Value>>>>,
@@ -136,24 +138,28 @@ enum SecretStorage {
 // Global instance
 static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::new();
 
+fn system_config_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/etc/goose/config.yaml")
+    }
+    #[cfg(windows)]
+    {
+        env::var("PROGRAMDATA")
+            .map(|d| PathBuf::from(d).join("goose").join("config.yaml"))
+            .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData\goose\config.yaml"))
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         let config_dir = Paths::config_dir();
+        let user_config_path = config_dir.join(CONFIG_YAML_NAME);
 
-        let config_path = config_dir.join(CONFIG_YAML_NAME);
-
-        let defaults_path = find_workspace_or_exe_root().and_then(|root| {
-            let path = root.join("defaults.yaml");
-            if path.exists() {
-                tracing::info!("Found bundled defaults.yaml at: {:?}", path);
-                Some(path)
-            } else {
-                None
-            }
-        });
+        let config_paths = vec![system_config_path(), user_config_path.clone()];
 
         let secrets = if env::var("GOOSE_DISABLE_KEYRING").is_ok()
-            || keyring_disabled_in_config(&config_path)
+            || keyring_disabled_in_config(&user_config_path)
         {
             SecretStorage::File {
                 path: config_dir.join("secrets.yaml"),
@@ -164,8 +170,7 @@ impl Default for Config {
             }
         };
         Config {
-            config_path,
-            defaults_path,
+            config_paths,
             secrets,
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
@@ -268,6 +273,50 @@ fn keyring_disabled_in_config(config_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+const EXTENSIONS_KEY: &str = "extensions";
+
+pub fn merge_config_values(base: &mut Mapping, overlay: Mapping) {
+    let extensions_key = serde_yaml::Value::String(EXTENSIONS_KEY.to_string());
+
+    for (key, overlay_value) in overlay {
+        if key == extensions_key {
+            let base_ext = base
+                .entry(key.clone())
+                .or_insert_with(|| serde_yaml::Value::Mapping(Mapping::new()));
+            if let (Some(base_map), Some(overlay_map)) =
+                (base_ext.as_mapping_mut(), overlay_value.as_mapping())
+            {
+                merge_extensions(base_map, overlay_map);
+            } else {
+                base.insert(key, overlay_value);
+            }
+        } else {
+            base.insert(key, overlay_value);
+        }
+    }
+}
+
+fn merge_extensions(base: &mut Mapping, overlay: &Mapping) {
+    for (ext_key, overlay_ext) in overlay {
+        match base.get_mut(ext_key) {
+            Some(base_ext) => {
+                if let (Some(base_map), Some(overlay_map)) =
+                    (base_ext.as_mapping_mut(), overlay_ext.as_mapping())
+                {
+                    for (field_key, field_value) in overlay_map {
+                        base_map.insert(field_key.clone(), field_value.clone());
+                    }
+                } else {
+                    *base_ext = overlay_ext.clone();
+                }
+            }
+            None => {
+                base.insert(ext_key.clone(), overlay_ext.clone());
+            }
+        }
+    }
+}
+
 impl Config {
     /// Get the global configuration instance.
     ///
@@ -283,8 +332,7 @@ impl Config {
     /// to manage multiple configuration files.
     pub fn new<P: AsRef<Path>>(config_path: P, service: &str) -> Result<Self, ConfigError> {
         Ok(Config {
-            config_path: config_path.as_ref().to_path_buf(),
-            defaults_path: None,
+            config_paths: vec![config_path.as_ref().to_path_buf()],
             secrets: SecretStorage::Keyring {
                 service: service.to_string(),
             },
@@ -302,8 +350,7 @@ impl Config {
         secrets_path: P2,
     ) -> Result<Self, ConfigError> {
         Ok(Config {
-            config_path: config_path.as_ref().to_path_buf(),
-            defaults_path: None,
+            config_paths: vec![config_path.as_ref().to_path_buf()],
             secrets: SecretStorage::File {
                 path: secrets_path.as_ref().to_path_buf(),
             },
@@ -312,36 +359,40 @@ impl Config {
         })
     }
 
-    pub fn new_with_defaults<P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>>(
-        config_path: P1,
-        secrets_path: P2,
-        defaults_path: P3,
+    pub fn new_with_config_paths<P1: AsRef<Path>>(
+        config_paths: Vec<PathBuf>,
+        secrets_path: P1,
     ) -> Result<Self, ConfigError> {
         Ok(Config {
-            config_path: config_path.as_ref().to_path_buf(),
-            defaults_path: Some(defaults_path.as_ref().to_path_buf()),
+            config_paths,
             secrets: SecretStorage::File {
                 path: secrets_path.as_ref().to_path_buf(),
             },
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
         })
+    }
+
+    fn write_path(&self) -> &PathBuf {
+        self.config_paths
+            .last()
+            .expect("config_paths must not be empty")
     }
 
     pub fn exists(&self) -> bool {
-        self.config_path.exists()
+        self.write_path().exists()
     }
 
     pub fn clear(&self) -> Result<(), ConfigError> {
-        Ok(std::fs::remove_file(&self.config_path)?)
+        Ok(std::fs::remove_file(&self.write_path())?)
     }
 
     pub fn path(&self) -> String {
-        self.config_path.to_string_lossy().to_string()
+        self.write_path().to_string_lossy().to_string()
     }
 
-    fn load_raw(&self) -> Result<Mapping, ConfigError> {
-        let mut values = if self.config_path.exists() {
+    fn load_write_config(&self) -> Result<Mapping, ConfigError> {
+        let mut values = if self.write_path().exists() {
             self.load_values_with_recovery()?
         } else {
             // Config file doesn't exist, try to recover from backup first
@@ -369,9 +420,27 @@ impl Config {
     }
 
     fn load(&self) -> Result<Mapping, ConfigError> {
-        let mut values = self.load_raw()?;
-        self.merge_missing_defaults(&mut values);
-        Ok(values)
+        let mut merged = Mapping::new();
+
+        for path in &self.config_paths {
+            if !path.exists() {
+                continue;
+            }
+            match std::fs::read_to_string(path)
+                .map_err(ConfigError::from)
+                .and_then(|content| parse_yaml_content(&content))
+            {
+                Ok(layer) => {
+                    tracing::debug!("Loading config from: {:?}", path);
+                    merge_config_values(&mut merged, layer);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load config {:?}: {}. Skipping.", path, e);
+                }
+            }
+        }
+
+        Ok(merged)
     }
 
     pub fn all_values(&self) -> Result<HashMap<String, Value>, ConfigError> {
@@ -412,7 +481,7 @@ impl Config {
     }
 
     fn load_values_with_recovery(&self) -> Result<Mapping, ConfigError> {
-        let file_content = std::fs::read_to_string(&self.config_path)?;
+        let file_content = std::fs::read_to_string(&self.write_path())?;
 
         match parse_yaml_content(&file_content) {
             Ok(values) => Ok(values),
@@ -485,10 +554,10 @@ impl Config {
         let mut paths = Vec::new();
 
         // Primary backup (created by backup_config endpoint)
-        if let Some(file_name) = self.config_path.file_name() {
+        if let Some(file_name) = self.write_path().file_name() {
             let mut backup_name = file_name.to_os_string();
             backup_name.push(".bak");
-            paths.push(self.config_path.with_file_name(backup_name));
+            paths.push(self.write_path().with_file_name(backup_name));
         }
 
         paths
@@ -499,7 +568,7 @@ impl Config {
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
-        let mut path = self.config_path.clone();
+        let mut path = self.write_path().clone();
 
         // Follow symlinks so we update the target file without replacing the link itself.
         const MAX_SYMLINK_HOPS: usize = 1;
@@ -512,7 +581,7 @@ impl Config {
                             std::io::ErrorKind::InvalidInput,
                             format!(
                                 "Too many symlink levels (or a cycle) while resolving config path: {:?}",
-                                self.config_path
+                                self.write_path()
                             ),
                         )
                         .into());
@@ -585,24 +654,24 @@ impl Config {
 
     // Create backup of current config file if it exists and is valid
     fn create_backup_if_needed(&self) -> Result<(), ConfigError> {
-        if !self.config_path.exists() {
+        if !self.write_path().exists() {
             return Ok(());
         }
 
         // Check if current config is valid before backing it up
-        let current_content = std::fs::read_to_string(&self.config_path)?;
+        let current_content = std::fs::read_to_string(&self.write_path())?;
         if parse_yaml_content(&current_content).is_err() {
             // Don't back up corrupted files
             return Ok(());
         }
 
         // Create new backup
-        if let Some(file_name) = self.config_path.file_name() {
+        if let Some(file_name) = self.write_path().file_name() {
             let mut backup_name = file_name.to_os_string();
             backup_name.push(".bak");
-            let backup_path = self.config_path.with_file_name(backup_name);
+            let backup_path = self.write_path().with_file_name(backup_name);
 
-            if let Err(e) = std::fs::copy(&self.config_path, &backup_path) {
+            if let Err(e) = std::fs::copy(&self.write_path(), &backup_path) {
                 tracing::warn!("Failed to create config backup: {}", e);
                 // Don't fail the entire operation if backup fails
             } else {
@@ -711,8 +780,7 @@ impl Config {
     ///
     /// This will attempt to get the value from (in order):
     /// 1. Environment variable with the uppercase key name
-    /// 2. Configuration file (~/.config/goose/config.yaml)
-    /// 3. Bundled defaults file (defaults.yaml in workspace root or executable directory)
+    /// 2. Merged config from all config paths (system → user → local)
     ///
     /// The value will be deserialized into the requested type. This works with
     /// both simple types (String, i32, etc.) and complex types that implement
@@ -738,24 +806,6 @@ impl Config {
             .and_then(|v| Ok(serde_yaml::from_value(v.clone())?))
     }
 
-    fn load_defaults(&self) -> Option<Mapping> {
-        let path = self.defaults_path.as_ref()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        parse_yaml_content(&content).ok()
-    }
-
-    fn merge_missing_defaults(&self, values: &mut Mapping) {
-        let Some(defaults) = self.load_defaults() else {
-            return;
-        };
-
-        for (key, default_value) in defaults {
-            if !values.contains_key(&key) {
-                values.insert(key, default_value);
-            }
-        }
-    }
-
     /// Set a configuration value in the config file (non-secret).
     ///
     /// This will immediately write the value to the config file. The value
@@ -771,7 +821,7 @@ impl Config {
     /// - There is an error serializing the value
     pub fn set_param<V: Serialize>(&self, key: &str, value: V) -> Result<(), ConfigError> {
         let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_raw()?;
+        let mut values = self.load_write_config()?;
         values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
         self.save_values(&values)
     }
@@ -793,7 +843,7 @@ impl Config {
         // Lock before reading to prevent race condition.
         let _guard = self.guard.lock().unwrap();
 
-        let mut values = self.load_raw()?;
+        let mut values = self.load_write_config()?;
         values.shift_remove(key);
 
         self.save_values(&values)
@@ -1410,37 +1460,26 @@ mod tests {
 
         // Create a valid config first
         config.set_param("key1", "value1")?;
-
-        // Verify the backup was created by the first write
-        let backup_paths = config.get_backup_paths();
-        println!("Backup paths: {:?}", backup_paths);
-        for (i, path) in backup_paths.iter().enumerate() {
-            println!("Backup {} exists: {}", i, path.exists());
-        }
-
-        // Make another write to ensure backup is created
         config.set_param("key2", 42)?;
-
-        // Check again
-        for (i, path) in backup_paths.iter().enumerate() {
-            println!(
-                "After second write - Backup {} exists: {}",
-                i,
-                path.exists()
-            );
-        }
 
         // Corrupt the main config file
         std::fs::write(config_file.path(), "invalid: yaml: content: [unclosed")?;
 
-        // Try to load values - should recover from backup
-        let recovered_values = config.all_values()?;
-        println!("Recovered values: {:?}", recovered_values);
+        // Reads skip corrupt files gracefully
+        let values = config.all_values()?;
+        assert!(
+            !values.contains_key("key1"),
+            "Corrupt file should be skipped during reads"
+        );
 
-        // Should have recovered the data
+        // A write triggers recovery from backup
+        config.set_param("key3", "new")?;
+
+        // Now the file should be recovered and readable again
+        let recovered_values = config.all_values()?;
         assert!(
             !recovered_values.is_empty(),
-            "Should have recovered at least one key"
+            "Should have recovered data after write triggered recovery"
         );
 
         Ok(())
@@ -1455,25 +1494,21 @@ mod tests {
         // Create a corrupted config file with no backup
         std::fs::write(config_file.path(), "invalid: yaml: content: [unclosed")?;
 
-        // Try to load values - should create a fresh default config
-        let recovered_values = config.all_values()?;
+        // Reads skip corrupt files
+        let values = config.all_values()?;
+        assert!(values.is_empty() || !values.contains_key("key1"));
 
-        // Note: migrations may add keys like "extensions", so we just verify
-        // that no user-defined keys exist (the config was reset)
-        assert!(
-            !recovered_values.contains_key("key1"),
-            "Should not have user keys after recovery"
-        );
+        // A write triggers recovery - creates fresh config
+        config.set_param("recovery_key", "value")?;
 
         // Verify that a clean config file was written to disk
         let file_content = std::fs::read_to_string(config_file.path())?;
-
-        // Should be valid YAML
         let parsed: serde_yaml::Value = serde_yaml::from_str(&file_content)?;
         assert!(parsed.is_mapping());
 
-        // Should be able to load it again without issues
-        let _reloaded_values = config.all_values()?;
+        // Should be able to load it again
+        let reloaded = config.all_values()?;
+        assert!(reloaded.contains_key("recovery_key"));
 
         Ok(())
     }
@@ -1489,26 +1524,18 @@ mod tests {
         std::fs::remove_file(&config_path)?;
         assert!(!config_path.exists());
 
-        // Try to load values - should create a fresh default config file
+        // Reads return empty when file is missing
         let values = config.all_values()?;
+        assert!(values.is_empty() || !values.contains_key("key1"));
 
-        // Note: migrations may add keys like "extensions", so we just verify
-        // that no user-defined keys exist (the config was freshly created)
-        assert!(
-            !values.contains_key("key1"),
-            "Should not have user keys in fresh config"
-        );
-
-        // Verify that the config file was created
+        // A write creates the file
+        config.set_param("new_key", "new_value")?;
         assert!(config_path.exists());
 
-        // Verify that it's valid YAML
+        // Verify valid YAML was written
         let file_content = std::fs::read_to_string(&config_path)?;
         let parsed: serde_yaml::Value = serde_yaml::from_str(&file_content)?;
         assert!(parsed.is_mapping());
-
-        // Should be able to load it again without issues
-        let _reloaded_values = config.all_values()?;
 
         Ok(())
     }
@@ -1520,41 +1547,27 @@ mod tests {
         let config_path = config_file.path().to_path_buf();
         let config = Config::new_with_file_secrets(&config_path, secrets_file.path())?;
 
-        // First, create a config with some data
+        // Create a config with some data (this also creates backups)
         config.set_param("test_key_backup", "backup_value")?;
         config.set_param("another_key", 42)?;
-
-        // Verify the backup was created
-        let backup_paths = config.get_backup_paths();
-        let primary_backup = &backup_paths[0]; // .bak file
-
-        // Make sure we have a backup by doing another write
         config.set_param("third_key", true)?;
-        assert!(primary_backup.exists(), "Backup should exist after writes");
 
-        // Now delete the main config file to simulate it being lost
+        let backup_paths = config.get_backup_paths();
+        assert!(backup_paths[0].exists(), "Backup should exist after writes");
+
+        // Delete the main config file
         std::fs::remove_file(&config_path)?;
         assert!(!config_path.exists());
 
-        // Try to load values - should recover from backup
-        let recovered_values = config.all_values()?;
+        // A write triggers recovery from backup
+        config.set_param("new_key", "value")?;
 
-        // Should have recovered the data from backup
-        assert!(
-            !recovered_values.is_empty(),
-            "Should have recovered data from backup"
-        );
-
-        // Verify the main config file was restored
+        // Main config should be restored
         assert!(config_path.exists(), "Main config file should be restored");
 
-        // Verify we can load the data (using a key that won't conflict with env vars)
-        if let Ok(backup_value) = config.get_param::<String>("test_key_backup") {
-            // If we recovered the key, great!
-            assert_eq!(backup_value, "backup_value");
-        }
-        // Note: Due to back up rotation, we might not get the exact same data,
-        // but we should get some data back
+        // Should be able to read recovered data
+        let values = config.all_values()?;
+        assert!(!values.is_empty(), "Should have recovered data from backup");
 
         Ok(())
     }
@@ -1888,24 +1901,28 @@ mod tests {
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
     }
 
-    fn new_test_config_with_defaults(defaults_content: &str) -> (Config, NamedTempFile) {
+    /// Create a test config where `base_content` is a lower-priority layer
+    /// and the actual writable config is a separate (initially empty) file.
+    fn new_test_config_with_base(base_content: &str) -> (Config, NamedTempFile) {
+        let base_file = NamedTempFile::new().unwrap();
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
-        let defaults_file = NamedTempFile::new().unwrap();
-        std::fs::write(defaults_file.path(), defaults_content).unwrap();
-        let config = Config::new_with_defaults(
-            config_file.path(),
+        std::fs::write(base_file.path(), base_content).unwrap();
+        let config = Config::new_with_config_paths(
+            vec![
+                base_file.path().to_path_buf(),
+                config_file.path().to_path_buf(),
+            ],
             secrets_file.path(),
-            defaults_file.path(),
         )
         .unwrap();
-        (config, defaults_file)
+        (config, base_file)
     }
 
     #[test]
     fn test_defaults_fallback_when_key_not_in_config() -> Result<(), ConfigError> {
         let (config, _defaults) =
-            new_test_config_with_defaults("SECURITY_PROMPT_ENABLED: true\nsome_key: default_val");
+            new_test_config_with_base("SECURITY_PROMPT_ENABLED: true\nsome_key: default_val");
 
         // Key only in defaults → returns defaults value
         let value: bool = config.get_param("SECURITY_PROMPT_ENABLED")?;
@@ -1920,7 +1937,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_full_precedence_env_over_config_over_defaults() -> Result<(), ConfigError> {
-        let (config, _defaults) = new_test_config_with_defaults("my_key: from_defaults");
+        let (config, _defaults) = new_test_config_with_base("my_key: from_defaults");
 
         // Only defaults → returns defaults
         let value: String = config.get_param("my_key")?;
@@ -1954,31 +1971,31 @@ mod tests {
     }
 
     #[test]
-    fn test_defaults_not_persisted_on_write() -> Result<(), ConfigError> {
-        let (config, _defaults) = new_test_config_with_defaults("default_key: default_value");
+    fn test_lower_priority_values_not_persisted_on_write() -> Result<(), ConfigError> {
+        let (config, _base) = new_test_config_with_base("base_key: base_value");
 
-        // Read a default value (should work)
-        let value: String = config.get_param("default_key")?;
-        assert_eq!(value, "default_value");
+        // Read a value from the base layer (should work)
+        let value: String = config.get_param("base_key")?;
+        assert_eq!(value, "base_value");
 
-        // Write a different key
+        // Write a different key to the user config
         config.set_param("user_key", "user_value")?;
 
-        // Read config file directly - should NOT contain default_key
+        // Read user config file directly - should NOT contain base_key
         let config_path = PathBuf::from(config.path());
         let file_content = std::fs::read_to_string(&config_path)?;
         assert!(
-            !file_content.contains("default_key"),
-            "Defaults should not be persisted to config file on write"
+            !file_content.contains("base_key"),
+            "Base layer values should not be persisted to user config on write"
         );
         assert!(
             file_content.contains("user_key"),
             "User's key should be in config file"
         );
 
-        // But reading via get_param should still return the default
-        let value: String = config.get_param("default_key")?;
-        assert_eq!(value, "default_value");
+        // But reading via get_param should still return the base value
+        let value: String = config.get_param("base_key")?;
+        assert_eq!(value, "base_value");
 
         Ok(())
     }
@@ -1997,6 +2014,294 @@ mod tests {
 
         let mode = std::fs::metadata(&secrets_path)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_config_values_basic_override() {
+        let mut base = Mapping::new();
+        base.insert(
+            serde_yaml::Value::String("key1".into()),
+            serde_yaml::Value::String("base_value".into()),
+        );
+        base.insert(
+            serde_yaml::Value::String("key2".into()),
+            serde_yaml::Value::String("keep_me".into()),
+        );
+
+        let mut overlay = Mapping::new();
+        overlay.insert(
+            serde_yaml::Value::String("key1".into()),
+            serde_yaml::Value::String("overlay_value".into()),
+        );
+        overlay.insert(
+            serde_yaml::Value::String("key3".into()),
+            serde_yaml::Value::String("new_value".into()),
+        );
+
+        merge_config_values(&mut base, overlay);
+
+        assert_eq!(base.get("key1").unwrap().as_str().unwrap(), "overlay_value");
+        assert_eq!(base.get("key2").unwrap().as_str().unwrap(), "keep_me");
+        assert_eq!(base.get("key3").unwrap().as_str().unwrap(), "new_value");
+    }
+
+    #[test]
+    fn test_merge_extensions_append_new() {
+        let mut base = Mapping::new();
+        let mut base_ext = Mapping::new();
+        let mut ext_a = Mapping::new();
+        ext_a.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        ext_a.insert(
+            serde_yaml::Value::String("type".into()),
+            serde_yaml::Value::String("builtin".into()),
+        );
+        base_ext.insert(
+            serde_yaml::Value::String("ext_a".into()),
+            serde_yaml::Value::Mapping(ext_a),
+        );
+        base.insert(
+            serde_yaml::Value::String("extensions".into()),
+            serde_yaml::Value::Mapping(base_ext),
+        );
+
+        let mut overlay = Mapping::new();
+        let mut overlay_ext = Mapping::new();
+        let mut ext_b = Mapping::new();
+        ext_b.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        ext_b.insert(
+            serde_yaml::Value::String("type".into()),
+            serde_yaml::Value::String("stdio".into()),
+        );
+        overlay_ext.insert(
+            serde_yaml::Value::String("ext_b".into()),
+            serde_yaml::Value::Mapping(ext_b),
+        );
+        overlay.insert(
+            serde_yaml::Value::String("extensions".into()),
+            serde_yaml::Value::Mapping(overlay_ext),
+        );
+
+        merge_config_values(&mut base, overlay);
+
+        let extensions = base.get("extensions").unwrap().as_mapping().unwrap();
+        assert!(extensions.contains_key("ext_a"));
+        assert!(extensions.contains_key("ext_b"));
+        // ext_a should be unchanged
+        let a = extensions.get("ext_a").unwrap().as_mapping().unwrap();
+        assert_eq!(a.get("enabled").unwrap().as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn test_merge_extensions_partial_override() {
+        // Base has ext_a enabled with several fields
+        let mut base = Mapping::new();
+        let mut base_ext = Mapping::new();
+        let mut ext_a = Mapping::new();
+        ext_a.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        ext_a.insert(
+            serde_yaml::Value::String("type".into()),
+            serde_yaml::Value::String("builtin".into()),
+        );
+        ext_a.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("My Extension".into()),
+        );
+        base_ext.insert(
+            serde_yaml::Value::String("my_ext".into()),
+            serde_yaml::Value::Mapping(ext_a),
+        );
+        base.insert(
+            serde_yaml::Value::String("extensions".into()),
+            serde_yaml::Value::Mapping(base_ext),
+        );
+
+        // Overlay just disables it with a partial entry
+        let mut overlay = Mapping::new();
+        let mut overlay_ext = Mapping::new();
+        let mut ext_override = Mapping::new();
+        ext_override.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(false),
+        );
+        overlay_ext.insert(
+            serde_yaml::Value::String("my_ext".into()),
+            serde_yaml::Value::Mapping(ext_override),
+        );
+        overlay.insert(
+            serde_yaml::Value::String("extensions".into()),
+            serde_yaml::Value::Mapping(overlay_ext),
+        );
+
+        merge_config_values(&mut base, overlay);
+
+        let extensions = base.get("extensions").unwrap().as_mapping().unwrap();
+        let my_ext = extensions.get("my_ext").unwrap().as_mapping().unwrap();
+
+        // enabled should be overridden to false
+        assert_eq!(my_ext.get("enabled").unwrap().as_bool().unwrap(), false);
+        // Other fields should be preserved
+        assert_eq!(my_ext.get("type").unwrap().as_str().unwrap(), "builtin");
+        assert_eq!(
+            my_ext.get("name").unwrap().as_str().unwrap(),
+            "My Extension"
+        );
+    }
+
+    #[test]
+    fn test_multi_path_config_loading() -> Result<(), ConfigError> {
+        let base_file = NamedTempFile::new().unwrap();
+        let user_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+
+        // Base (system) config
+        std::fs::write(
+            base_file.path(),
+            "GOOSE_PROVIDER: openai\nGOOSE_MODEL: gpt-4\n",
+        )
+        .unwrap();
+
+        // User config overrides model
+        std::fs::write(user_file.path(), "GOOSE_MODEL: gpt-4o\n").unwrap();
+
+        let config = Config::new_with_config_paths(
+            vec![
+                base_file.path().to_path_buf(),
+                user_file.path().to_path_buf(),
+            ],
+            secrets_file.path(),
+        )?;
+
+        // GOOSE_MODEL should be overridden by later config
+        let model: String = config.get_param("GOOSE_MODEL")?;
+        assert_eq!(model, "gpt-4o");
+
+        // GOOSE_PROVIDER should still come from base
+        let provider: String = config.get_param("GOOSE_PROVIDER")?;
+        assert_eq!(provider, "openai");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_extension_merge_across_configs() -> Result<(), ConfigError> {
+        let base_file = NamedTempFile::new().unwrap();
+        let local_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+
+        // System config (lower priority) has developer extension enabled
+        std::fs::write(
+            base_file.path(),
+            r#"
+extensions:
+  developer:
+    enabled: true
+    type: builtin
+    name: Developer
+    description: "Core developer tools"
+"#,
+        )
+        .unwrap();
+
+        // User config (higher priority / write target) disables developer and adds a new extension
+        std::fs::write(
+            local_file.path(),
+            r#"
+extensions:
+  developer:
+    enabled: false
+  my_custom_ext:
+    enabled: true
+    type: stdio
+    name: MyCustom
+    cmd: /usr/bin/my-ext
+"#,
+        )
+        .unwrap();
+
+        // local_file is last = write target and highest priority
+        let config = Config::new_with_config_paths(
+            vec![
+                base_file.path().to_path_buf(),
+                local_file.path().to_path_buf(),
+            ],
+            secrets_file.path(),
+        )?;
+
+        let values = config.load()?;
+        let extensions = values.get("extensions").unwrap().as_mapping().unwrap();
+
+        // developer should be disabled (user config overrides system)
+        let dev = extensions.get("developer").unwrap().as_mapping().unwrap();
+        assert_eq!(dev.get("enabled").unwrap().as_bool().unwrap(), false);
+        // Fields from the system config should be preserved via merge
+        assert!(dev.get("name").is_some());
+
+        // my_custom_ext should be present from user config
+        let custom = extensions
+            .get("my_custom_ext")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(custom.get("enabled").unwrap().as_bool().unwrap(), true);
+        assert_eq!(custom.get("type").unwrap().as_str().unwrap(), "stdio");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_three_config_layers_ordered() -> Result<(), ConfigError> {
+        let system_file = NamedTempFile::new().unwrap();
+        let user_file = NamedTempFile::new().unwrap();
+        let local_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+
+        std::fs::write(system_file.path(), "key: system\n").unwrap();
+        std::fs::write(user_file.path(), "key: user\n").unwrap();
+        std::fs::write(local_file.path(), "key: local\n").unwrap();
+
+        let config = Config::new_with_config_paths(
+            vec![
+                system_file.path().to_path_buf(),
+                user_file.path().to_path_buf(),
+                local_file.path().to_path_buf(),
+            ],
+            secrets_file.path(),
+        )?;
+
+        let value: String = config.get_param("key")?;
+        assert_eq!(value, "local");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_missing_config_path_is_skipped() -> Result<(), ConfigError> {
+        let config_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+
+        std::fs::write(config_file.path(), "key: base\n").unwrap();
+
+        let config = Config::new_with_config_paths(
+            vec![
+                PathBuf::from("/tmp/nonexistent_goose_config.yaml"),
+                config_file.path().to_path_buf(),
+            ],
+            secrets_file.path(),
+        )?;
+
+        let value: String = config.get_param("key")?;
+        assert_eq!(value, "base");
 
         Ok(())
     }
