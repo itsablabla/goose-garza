@@ -23,10 +23,6 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-/// Maximum number of characters allowed in a single file read response.
-/// Reads exceeding this limit return a helpful message with a preview instead.
-const MAX_FILE_READ_CHARS: usize = 200_000;
-
 async fn acp_read_text_file(
     cx: &ConnectionTo<Client>,
     session_id: &SessionId,
@@ -144,25 +140,9 @@ impl AcpTools {
         );
         match acp_read_text_file(&self.cx, &self.session_id, &path, params.line, params.limit).await
         {
-            Ok(content) => {
-                if content.chars().count() > MAX_FILE_READ_CHARS {
-                    let line_count = content.lines().count();
-                    let preview: String = content.lines().take(50).collect::<Vec<_>>().join("\n");
-                    let msg = format!(
-                        "File is too large to display in full ({} characters, {line_count} lines). \
-                         Use the 'line' and 'limit' parameters to read specific sections of the file.\n\n\
-                         Preview (first 50 lines):\n{preview}",
-                        content.chars().count()
-                    );
-                    Ok(CallToolResult::success(vec![
-                        RmcpContent::text(msg).with_priority(0.0)
-                    ]))
-                } else {
-                    Ok(CallToolResult::success(vec![
-                        RmcpContent::text(content).with_priority(0.0)
-                    ]))
-                }
-            }
+            Ok(content) => Ok(CallToolResult::success(vec![
+                RmcpContent::text(content).with_priority(0.0)
+            ])),
             Err(e) => Ok(fail("read", &params.path, e)),
         }
     }
