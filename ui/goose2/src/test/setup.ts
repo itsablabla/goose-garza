@@ -1,6 +1,8 @@
 import React from "react";
-import "@testing-library/jest-dom/vitest";
-import { beforeEach, vi } from "vitest";
+import * as matchers from "@testing-library/jest-dom/matchers";
+import { beforeEach, expect, vi } from "vitest";
+
+expect.extend(matchers);
 
 import { DEFAULT_LOCALE, TRANSLATION_NAMESPACES, i18n } from "@/shared/i18n";
 
