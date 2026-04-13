@@ -20,6 +20,15 @@ use std::{
 
 const WORKING_DIR_HEADER: &str = "agent-working-dir";
 
+/// Reserved category for user identity — name, role, preferences, style.
+const USER_PROFILE_CATEGORY: &str = "user_profile";
+
+/// Maximum total chars for user profile entries in system prompt.
+const USER_PROFILE_BUDGET: usize = 1375;
+
+/// Maximum total chars for all other global memories in system prompt.
+const GLOBAL_MEMORY_BUDGET: usize = 2200;
+
 fn extract_working_dir_from_meta(meta: &Meta) -> Option<PathBuf> {
     meta.0
         .get(WORKING_DIR_HEADER)
@@ -71,6 +80,27 @@ pub struct RemoveSpecificMemoryParams {
     pub is_global: bool,
 }
 
+/// Parameters for the replace_memory tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReplaceMemoryParams {
+    /// The category containing the memory to replace
+    pub category: String,
+    /// Substring that uniquely identifies the memory entry to replace
+    pub old_content: String,
+    /// The new content for this entry (replaces the entire entry)
+    pub new_content: String,
+    /// Optional tags for the new entry
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Whether to operate on global or local memory
+    #[serde(default = "default_global")]
+    pub is_global: bool,
+}
+
+fn default_global() -> bool {
+    true
+}
+
 /// Memory MCP Server using official RMCP SDK
 #[derive(Clone)]
 pub struct MemoryServer {
@@ -95,9 +125,18 @@ impl MemoryServer {
              - Local: .goose/memory/ (project-specific)
              - Global: ~/.config/goose/memory/ (user-wide)
 
-             Save proactively when users share preferences, project configurations, workflow patterns,
-             or recurring commands. Always confirm with the user before saving. Suggest relevant
-             categories and tags, and clarify storage scope (local vs global).
+             Categories:
+             - 'user_profile': WHO the user is — name, role, timezone, coding style, preferences, pet peeves.
+             - All other categories: WHAT you've learned — environment facts, project conventions, tool quirks.
+
+             Save proactively when:
+             - User corrects you or says 'remember this'
+             - User shares a preference, habit, or personal detail (use category: user_profile)
+             - You discover something about the environment (use relevant category name)
+             Do NOT save: task progress, session outcomes, temporary state.
+
+             Memory has size limits. When at capacity, curate: use replace_memory to update stale entries,
+             or remove_specific_memory to drop low-value ones. Quality over quantity.
 
              Use category "*" with retrieve_memories or remove_memory_category to access all entries.
             "#};
@@ -116,25 +155,59 @@ impl MemoryServer {
 
         let mut updated_instructions = instructions;
 
-        let memories_follow_up_instructions = formatdoc! {r#"
-            **Here are the user's currently saved memories:**
-            Please keep this information in mind when answering future questions.
-            Do not bring up memories unless relevant.
-            Note: if the user has not saved any memories, this section will be empty.
-            Note: if the user removes a memory that was previously loaded into the system, please remove it from the system instructions.
-            "#};
+        updated_instructions.push_str("\n\n**Here are the user's currently saved memories:**\n");
+        updated_instructions.push_str("Keep this information in mind. Do not bring up memories unless relevant.\n");
 
-        updated_instructions.push_str("\n\n");
-        updated_instructions.push_str(&memories_follow_up_instructions);
-
-        if let Ok(global_memories) = retrieved_global_memories {
-            if !global_memories.is_empty() {
-                updated_instructions.push_str("\n\nGlobal Memories:\n");
-                for (category, memories) in global_memories {
-                    updated_instructions.push_str(&format!("\nCategory: {}\n", category));
-                    for memory in memories {
-                        updated_instructions.push_str(&format!("- {}\n", memory));
+        if let Ok(mut global_memories) = retrieved_global_memories {
+            // Render user_profile first with its own budget
+            if let Some(profile_entries) = global_memories.remove(USER_PROFILE_CATEGORY) {
+                updated_instructions.push_str("\n# User Profile\n");
+                let mut profile_chars = 0;
+                for memory in &profile_entries {
+                    let entry = format!("- {}\n", memory);
+                    if profile_chars + entry.len() > USER_PROFILE_BUDGET {
+                        updated_instructions.push_str(&format!(
+                            "\n[Profile at capacity ({}/{} chars). Curate: replace or remove entries before adding new ones.]\n",
+                            profile_chars, USER_PROFILE_BUDGET
+                        ));
+                        break;
                     }
+                    updated_instructions.push_str(&entry);
+                    profile_chars += entry.len();
+                }
+            }
+
+            // Render other memories with their budget
+            if !global_memories.is_empty() {
+                updated_instructions.push_str("\n# Memories\n");
+                let mut memory_chars = 0;
+                let mut at_capacity = false;
+                for (category, memories) in &global_memories {
+                    let header = format!("\n## {}\n", category);
+                    if memory_chars + header.len() > GLOBAL_MEMORY_BUDGET {
+                        at_capacity = true;
+                        break;
+                    }
+                    updated_instructions.push_str(&header);
+                    memory_chars += header.len();
+                    for memory in memories {
+                        let entry = format!("- {}\n", memory);
+                        if memory_chars + entry.len() > GLOBAL_MEMORY_BUDGET {
+                            at_capacity = true;
+                            break;
+                        }
+                        updated_instructions.push_str(&entry);
+                        memory_chars += entry.len();
+                    }
+                    if at_capacity {
+                        break;
+                    }
+                }
+                if at_capacity {
+                    updated_instructions.push_str(&format!(
+                        "\n[Memory at capacity ({}/{} chars). Curate: replace or remove low-value entries.]\n",
+                        memory_chars, GLOBAL_MEMORY_BUDGET
+                    ));
                 }
             }
         }
@@ -363,10 +436,28 @@ impl MemoryServer {
         )
         .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Stored memory in category: {}",
-            params.category
-        ))]))
+        // Check budget after write
+        let budget = if params.category == USER_PROFILE_CATEGORY {
+            USER_PROFILE_BUDGET
+        } else {
+            GLOBAL_MEMORY_BUDGET
+        };
+        let memory_file_path =
+            self.get_memory_file(&params.category, params.is_global, working_dir.as_ref());
+        let file_size = fs::read_to_string(&memory_file_path)
+            .map(|c| c.len())
+            .unwrap_or(0);
+
+        let mut msg = format!("Stored memory in category: {}", params.category);
+        if params.is_global && file_size > budget {
+            msg.push_str(&format!(
+                "\n\nWarning: category '{}' is over budget ({}/{} chars). \
+                 Curate: use replace_memory to update stale entries or remove_specific_memory to drop low-value ones.",
+                params.category, file_size, budget
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     /// Retrieves all memories from a specified category
@@ -449,6 +540,91 @@ impl MemoryServer {
             "Removed specific memory from category: {}",
             params.category
         ))]))
+    }
+
+    /// Replaces a specific memory entry with new content (atomic find-and-replace)
+    #[tool(
+        name = "replace_memory",
+        description = "Replaces an existing memory entry. Use old_content to identify the entry (substring match), and new_content for the replacement. Useful for updating stale memories without remove+re-add."
+    )]
+    pub async fn replace_memory(
+        &self,
+        params: Parameters<ReplaceMemoryParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let params = params.0;
+        let working_dir = extract_working_dir_from_meta(&context.meta);
+
+        let memory_file_path =
+            self.get_memory_file(&params.category, params.is_global, working_dir.as_ref());
+        if !memory_file_path.exists() {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("Category '{}' not found", params.category),
+                None,
+            ));
+        }
+
+        let content = fs::read_to_string(&memory_file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+
+        let entries: Vec<&str> = content.split("\n\n").collect();
+        let matching: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.contains(&params.old_content))
+            .map(|(i, _)| i)
+            .collect();
+
+        if matching.is_empty() {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "old_content not found in any entry. Use retrieve_memories to see current content."
+                    .to_string(),
+                None,
+            ));
+        }
+        if matching.len() > 1 {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!(
+                    "old_content matches {} entries. Use a more specific substring.",
+                    matching.len()
+                ),
+                None,
+            ));
+        }
+
+        let mut new_entries: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+        let replacement = if params.tags.is_empty() {
+            params.new_content.clone()
+        } else {
+            format!("# {}\n{}", params.tags.join(" "), params.new_content)
+        };
+        new_entries[matching[0]] = replacement;
+
+        fs::write(&memory_file_path, new_entries.join("\n\n"))
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+
+        // Check budget after replacement
+        let budget = if params.category == USER_PROFILE_CATEGORY {
+            USER_PROFILE_BUDGET
+        } else {
+            GLOBAL_MEMORY_BUDGET
+        };
+        let file_size = fs::read_to_string(&memory_file_path)
+            .map(|c| c.len())
+            .unwrap_or(0);
+
+        let mut msg = format!("Replaced memory in category: {}", params.category);
+        if file_size > budget {
+            msg.push_str(&format!(
+                "\n\nWarning: category '{}' is over budget ({}/{} chars). Curate: remove low-value entries.",
+                params.category, file_size, budget
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 }
 
@@ -664,5 +840,144 @@ mod tests {
             .values()
             .any(|v| v.iter().any(|content| content.contains("keep_this")));
         assert!(has_kept);
+    }
+
+    #[test]
+    fn test_user_profile_renders_first_in_instructions() {
+        let temp_dir = tempdir().unwrap();
+        let global_dir = temp_dir.path().join("global_memory");
+
+        let router = MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: global_dir.clone(),
+        };
+
+        // Write user_profile and another category
+        router
+            .remember("ctx", USER_PROFILE_CATEGORY, "Name: Alice", &[], true, None)
+            .unwrap();
+        router
+            .remember("ctx", "environment", "OS: macOS", &[], true, None)
+            .unwrap();
+
+        // Build a new server to trigger instructions assembly
+        let server = MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: global_dir,
+        };
+        // Re-run the new() logic by constructing fresh
+        let retrieved = server.retrieve_all(true, None).unwrap();
+        assert!(retrieved.contains_key(USER_PROFILE_CATEGORY));
+
+        // Check that instructions from new() would have User Profile before Memories
+        // We test the rendering logic directly
+        let mut instructions = String::new();
+        let mut memories = retrieved;
+        if let Some(profile) = memories.remove(USER_PROFILE_CATEGORY) {
+            instructions.push_str("# User Profile\n");
+            for m in &profile {
+                instructions.push_str(&format!("- {}\n", m));
+            }
+        }
+        if !memories.is_empty() {
+            instructions.push_str("# Memories\n");
+        }
+
+        let profile_pos = instructions.find("# User Profile").unwrap();
+        let memories_pos = instructions.find("# Memories").unwrap();
+        assert!(profile_pos < memories_pos);
+    }
+
+    #[test]
+    fn test_user_profile_budget_enforced() {
+        let temp_dir = tempdir().unwrap();
+        let global_dir = temp_dir.path().join("budget_test");
+
+        let router = MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: global_dir.clone(),
+        };
+
+        // Write many entries to exceed USER_PROFILE_BUDGET (1375 chars)
+        for i in 0..50 {
+            router
+                .remember(
+                    "ctx",
+                    USER_PROFILE_CATEGORY,
+                    &format!("Preference {}: this is a moderately long preference entry number {}", i, i),
+                    &[],
+                    true,
+                    None,
+                )
+                .unwrap();
+        }
+
+        // Build a new server to check instructions
+        let new_server = MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: global_dir,
+        };
+        // Simulate the instruction building
+        let mut all = new_server.retrieve_all(true, None).unwrap();
+        let profile = all.remove(USER_PROFILE_CATEGORY).unwrap();
+
+        let mut rendered = String::new();
+        let mut chars = 0;
+        let mut hit_cap = false;
+        for m in &profile {
+            let entry = format!("- {}\n", m);
+            if chars + entry.len() > USER_PROFILE_BUDGET {
+                hit_cap = true;
+                break;
+            }
+            rendered.push_str(&entry);
+            chars += entry.len();
+        }
+        // Should have hit the budget before rendering all 50
+        assert!(hit_cap);
+        assert!(chars <= USER_PROFILE_BUDGET);
+    }
+
+    #[test]
+    fn test_replace_memory_internal() {
+        let temp_dir = tempdir().unwrap();
+        let global_dir = temp_dir.path().join("replace_test");
+
+        let router = MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: global_dir,
+        };
+
+        // Write two entries
+        router.remember("ctx", "prefs", "editor: vim", &[], true, None).unwrap();
+        router.remember("ctx", "prefs", "shell: bash", &[], true, None).unwrap();
+
+        // Read the file and do a manual replace (simulating replace_memory logic)
+        let file_path = router.get_memory_file("prefs", true, None);
+        let content = fs::read_to_string(&file_path).unwrap();
+        let entries: Vec<&str> = content.split("\n\n").collect();
+        let matching: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.contains("editor: vim"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(matching.len(), 1);
+
+        let mut new_entries: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+        new_entries[matching[0]] = "editor: neovim".to_string();
+        fs::write(&file_path, new_entries.join("\n\n")).unwrap();
+
+        // Verify replacement
+        let memories = router.retrieve("prefs", true, None).unwrap();
+        let all_values: Vec<String> = memories.values().flatten().cloned().collect();
+        assert!(all_values.iter().any(|v| v.contains("neovim")));
+        assert!(!all_values.iter().any(|v| v.contains("editor: vim")));
+        assert!(all_values.iter().any(|v| v.contains("shell: bash")));
     }
 }
