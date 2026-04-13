@@ -23,11 +23,31 @@ const WORKING_DIR_HEADER: &str = "agent-working-dir";
 /// Reserved category for user identity — name, role, preferences, style.
 const USER_PROFILE_CATEGORY: &str = "user_profile";
 
-/// Maximum total chars for user profile entries in system prompt.
+/// Maximum total chars for user profile category in system prompt.
 const USER_PROFILE_BUDGET: usize = 1375;
 
-/// Maximum total chars for all other global memories in system prompt.
-const GLOBAL_MEMORY_BUDGET: usize = 2200;
+/// Maximum total chars per memory category in system prompt.
+const MEMORY_CATEGORY_BUDGET: usize = 2200;
+
+/// Sanitize memory content to prevent corruption of the \n\n entry delimiter.
+/// Collapses any consecutive blank lines into a single newline.
+fn sanitize_memory_content(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_was_newline = false;
+    for ch in s.chars() {
+        if ch == '\n' {
+            if prev_was_newline {
+                // Skip consecutive newlines (would create a \n\n delimiter)
+                continue;
+            }
+            prev_was_newline = true;
+        } else {
+            prev_was_newline = false;
+        }
+        result.push(ch);
+    }
+    result.trim().to_string()
+}
 
 fn extract_working_dir_from_meta(meta: &Meta) -> Option<PathBuf> {
     meta.0
@@ -185,7 +205,7 @@ impl MemoryServer {
                 let mut at_capacity = false;
                 for (category, memories) in &global_memories {
                     let header = format!("\n## {}\n", category);
-                    if memory_chars + header.len() > GLOBAL_MEMORY_BUDGET {
+                    if memory_chars + header.len() > MEMORY_CATEGORY_BUDGET {
                         at_capacity = true;
                         break;
                     }
@@ -193,7 +213,7 @@ impl MemoryServer {
                     memory_chars += header.len();
                     for memory in memories {
                         let entry = format!("- {}\n", memory);
-                        if memory_chars + entry.len() > GLOBAL_MEMORY_BUDGET {
+                        if memory_chars + entry.len() > MEMORY_CATEGORY_BUDGET {
                             at_capacity = true;
                             break;
                         }
@@ -207,7 +227,7 @@ impl MemoryServer {
                 if at_capacity {
                     updated_instructions.push_str(&format!(
                         "\n[Memory at capacity ({}/{} chars). Curate: replace or remove low-value entries.]\n",
-                        memory_chars, GLOBAL_MEMORY_BUDGET
+                        memory_chars, MEMORY_CATEGORY_BUDGET
                     ));
                 }
             }
@@ -295,10 +315,11 @@ impl MemoryServer {
             .append(true)
             .create(true)
             .open(&memory_file_path)?;
+        let sanitized_data = sanitize_memory_content(data);
         if !tags.is_empty() {
             writeln!(file, "# {}", tags.join(" "))?;
         }
-        writeln!(file, "{}\n", data)?;
+        writeln!(file, "{}\n", sanitized_data)?;
 
         Ok(())
     }
@@ -441,7 +462,7 @@ impl MemoryServer {
         let budget = if params.category == USER_PROFILE_CATEGORY {
             USER_PROFILE_BUDGET
         } else {
-            GLOBAL_MEMORY_BUDGET
+            MEMORY_CATEGORY_BUDGET
         };
         let memory_file_path =
             self.get_memory_file(&params.category, params.is_global, working_dir.as_ref());
@@ -597,10 +618,11 @@ impl MemoryServer {
         }
 
         let mut new_entries: Vec<String> = entries.iter().map(|s| s.to_string()).collect();
+        let sanitized_content = sanitize_memory_content(&params.new_content);
         let replacement = if params.tags.is_empty() {
-            params.new_content.clone()
+            sanitized_content
         } else {
-            format!("# {}\n{}", params.tags.join(" "), params.new_content)
+            format!("# {}\n{}", params.tags.join(" "), sanitized_content)
         };
         new_entries[matching[0]] = replacement;
 
@@ -611,7 +633,7 @@ impl MemoryServer {
         let budget = if params.category == USER_PROFILE_CATEGORY {
             USER_PROFILE_BUDGET
         } else {
-            GLOBAL_MEMORY_BUDGET
+            MEMORY_CATEGORY_BUDGET
         };
         let file_size = fs::read_to_string(&memory_file_path)
             .map(|c| c.len())

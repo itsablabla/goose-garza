@@ -145,14 +145,14 @@ impl AcpTools {
         match acp_read_text_file(&self.cx, &self.session_id, &path, params.line, params.limit).await
         {
             Ok(content) => {
-                if content.len() > MAX_FILE_READ_CHARS {
+                if content.chars().count() > MAX_FILE_READ_CHARS {
                     let line_count = content.lines().count();
                     let preview: String = content.lines().take(50).collect::<Vec<_>>().join("\n");
                     let msg = format!(
                         "File is too large to display in full ({} characters, {line_count} lines). \
                          Use the 'line' and 'limit' parameters to read specific sections of the file.\n\n\
                          Preview (first 50 lines):\n{preview}",
-                        content.len()
+                        content.chars().count()
                     );
                     Ok(CallToolResult::success(vec![
                         RmcpContent::text(msg).with_priority(0.0)

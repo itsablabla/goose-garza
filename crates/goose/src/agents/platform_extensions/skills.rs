@@ -279,32 +279,45 @@ impl SkillsClient {
         let skill_dir = Paths::config_dir().join("skills").join(name);
         let skill_path = skill_dir.join("SKILL.md");
 
-        if skill_path.exists() {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Skill '{}' already exists. Use patch_skill to update it.",
-                name
-            ))]));
-        }
+        let name = name.to_string();
+        let content = content.to_string();
+        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            std::fs::create_dir_all(&skill_dir)
+                .map_err(|e| format!("Failed to create skill directory: {}", e))?;
 
-        if let Err(e) = std::fs::create_dir_all(&skill_dir) {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to create skill directory: {}",
-                e
-            ))]));
-        }
+            // Use create_new to atomically check existence + create (no TOCTOU race)
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&skill_path)
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        format!(
+                            "Skill '{}' already exists. Use patch_skill to update it.",
+                            name
+                        )
+                    } else {
+                        format!("Failed to create skill: {}", e)
+                    }
+                })?;
 
-        if let Err(e) = std::fs::write(&skill_path, content) {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to write skill: {}",
-                e
-            ))]));
-        }
+            use std::io::Write;
+            file.write_all(content.as_bytes())
+                .map_err(|e| format!("Failed to write skill: {}", e))?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Created skill '{}' at {}",
-            name,
-            skill_path.display()
-        ))]))
+            Ok(format!(
+                "Created skill '{}' at {}",
+                name,
+                skill_path.display()
+            ))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Internal error: {}", e)));
+
+        match result {
+            Ok(msg) => Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Err(msg) => Ok(CallToolResult::error(vec![Content::text(msg)])),
+        }
     }
 
     async fn handle_patch_skill(
@@ -350,43 +363,46 @@ impl SkillsClient {
         }
 
         let skill_path = skill.path.join("SKILL.md");
-        let content = match std::fs::read_to_string(&skill_path) {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to read skill: {}",
-                    e
-                ))]));
+        let old_text = old_text.to_string();
+        let new_text = new_text.to_string();
+        let name = name.to_string();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let content = std::fs::read_to_string(&skill_path)
+                .map_err(|e| format!("Failed to read skill: {}", e))?;
+
+            let matches: Vec<_> = content.match_indices(old_text.as_str()).collect();
+            if matches.is_empty() {
+                return Err(
+                    "old_text not found in skill. Load the skill first to see current content."
+                        .to_string(),
+                );
             }
-        };
+            if matches.len() > 1 {
+                return Err(format!(
+                    "old_text matches {} locations. Use a more specific string.",
+                    matches.len()
+                ));
+            }
 
-        let matches: Vec<_> = content.match_indices(old_text).collect();
-        if matches.is_empty() {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "old_text not found in skill. Load the skill first to see current content.",
-            )]));
-        }
-        if matches.len() > 1 {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "old_text matches {} locations. Use a more specific string.",
-                matches.len()
-            ))]));
-        }
+            let new_content = content.replacen(old_text.as_str(), &new_text, 1);
+            std::fs::write(&skill_path, &new_content)
+                .map_err(|e| format!("Failed to write skill: {}", e))?;
 
-        let new_content = content.replacen(old_text, new_text, 1);
-        if let Err(e) = std::fs::write(&skill_path, &new_content) {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to write skill: {}",
-                e
-            ))]));
-        }
+            Ok(format!(
+                "Patched skill '{}' — replaced {} chars with {} chars",
+                name,
+                old_text.len(),
+                new_text.len()
+            ))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Internal error: {}", e)));
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Patched skill '{}' — replaced {} chars with {} chars",
-            name,
-            old_text.len(),
-            new_text.len()
-        ))]))
+        match result {
+            Ok(msg) => Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Err(msg) => Ok(CallToolResult::error(vec![Content::text(msg)])),
+        }
     }
 }
 
