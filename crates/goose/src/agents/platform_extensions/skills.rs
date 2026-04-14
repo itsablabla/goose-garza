@@ -362,6 +362,15 @@ impl SkillsClient {
             )]));
         }
 
+        // Only allow patching skills in the goose config directory.
+        // Skills from ~/.agents/, .claude/, etc. are user-managed and read-only.
+        let goose_skills_dir = Paths::config_dir().join("skills");
+        if !skill.path.starts_with(&goose_skills_dir) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Cannot patch externally installed skills. Create a new skill in goose's directory instead.",
+            )]));
+        }
+
         let skill_path = skill.path.join("SKILL.md");
         let old_text = old_text.to_string();
         let new_text = new_text.to_string();
@@ -827,14 +836,26 @@ mod tests {
     #[tokio::test]
     async fn test_patch_skill_updates_content() {
         let temp_dir = TempDir::new().unwrap();
-        let skill_dir = temp_dir.path().join(".goose/skills/patch-test");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: patch-test\ndescription: Test\n---\nStep 1: Do old thing.\nStep 2: Done.",
-        )
-        .unwrap();
 
+        // Create the skill via create_skill (writes to Paths::config_dir())
+        let client = SkillsClient {
+            info: InitializeResult::new(ServerCapabilities::builder().enable_tools().build()),
+            working_dir: temp_dir.path().to_path_buf(),
+        };
+
+        let ctx = ToolCallContext::new("test".to_string(), None, None);
+        let create_args: JsonObject = serde_json::from_value(serde_json::json!({
+            "name": "patch-test-2",
+            "content": "---\nname: patch-test-2\ndescription: Test\n---\nStep 1: Do old thing.\nStep 2: Done."
+        }))
+        .unwrap();
+        let create_result = client
+            .call_tool(&ctx, "create_skill", Some(create_args), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!create_result.is_error.unwrap_or(false));
+
+        // Now create a SkillsClient that can discover the skill
         let session = Arc::new(crate::session::Session {
             working_dir: temp_dir.path().to_path_buf(),
             ..crate::session::Session::default()
@@ -846,24 +867,27 @@ mod tests {
         })
         .unwrap();
 
-        let ctx = ToolCallContext::new("test".to_string(), None, None);
-        let args: JsonObject = serde_json::from_value(serde_json::json!({
-            "name": "patch-test",
+        let patch_args: JsonObject = serde_json::from_value(serde_json::json!({
+            "name": "patch-test-2",
             "old_text": "Do old thing.",
             "new_text": "Do new thing."
         }))
         .unwrap();
         let result = client
-            .call_tool(&ctx, "patch_skill", Some(args), CancellationToken::new())
+            .call_tool(&ctx, "patch_skill", Some(patch_args), CancellationToken::new())
             .await
             .unwrap();
 
         assert!(!result.is_error.unwrap_or(false));
 
-        let content = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        let skill_path = Paths::config_dir().join("skills/patch-test-2/SKILL.md");
+        let content = fs::read_to_string(&skill_path).unwrap();
         assert!(content.contains("Do new thing."));
         assert!(!content.contains("Do old thing."));
         assert!(content.contains("Step 2: Done."));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(Paths::config_dir().join("skills/patch-test-2"));
     }
 
     #[tokio::test]
