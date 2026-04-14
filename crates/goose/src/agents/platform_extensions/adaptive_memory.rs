@@ -96,6 +96,7 @@ fn read_entries(filename: &str) -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn write_entries(filename: &str, entries: &[String]) -> std::io::Result<()> {
     let dir = memory_dir();
     fs::create_dir_all(&dir)?;
@@ -126,6 +127,7 @@ fn write_entries(filename: &str, entries: &[String]) -> std::io::Result<()> {
 }
 
 /// Read entries with shared lock to avoid reading mid-write.
+#[allow(dead_code)]
 fn read_entries_locked(filename: &str) -> Vec<String> {
     let dir = memory_dir();
     let lock_path = dir.join(format!(".{}.lock", filename));
@@ -141,6 +143,51 @@ fn read_entries_locked(filename: &str) -> Vec<String> {
         result
     } else {
         read_entries(filename)
+    }
+}
+
+/// Execute a read-modify-write operation under a single exclusive lock.
+///
+/// The closure receives the current entries and returns the new entries to write.
+/// If the closure returns None, no write happens (used for early returns).
+/// This matches Hermes's pattern of holding the lock for the entire operation.
+fn with_exclusive_entries<F>(filename: &str, f: F) -> std::io::Result<Vec<String>>
+where
+    F: FnOnce(&mut Vec<String>) -> Option<Vec<String>>,
+{
+    let dir = memory_dir();
+    fs::create_dir_all(&dir)?;
+    let lock_path = dir.join(format!(".{}.lock", filename));
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
+    // Read under lock
+    let mut entries = read_entries(filename);
+
+    // Let caller mutate
+    let result = f(&mut entries);
+
+    // Write if caller produced new entries
+    if let Some(new_entries) = result {
+        let path = dir.join(filename);
+        let content = if new_entries.is_empty() {
+            String::new()
+        } else {
+            new_entries.join(ENTRY_DELIMITER)
+        };
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        tmp.write_all(content.as_bytes())?;
+        tmp.flush()?;
+        tmp.persist(&path).map_err(|e| e.error)?;
+        lock_file.unlock()?;
+        Ok(new_entries)
+    } else {
+        lock_file.unlock()?;
+        Ok(entries)
     }
 }
 
@@ -360,52 +407,57 @@ impl McpClientTrait for AdaptiveMemoryClient {
                     return Ok(CallToolResult::error(vec![Content::text(err)]));
                 }
 
-                let mut entries = read_entries_locked(filename);
+                // Atomic read-modify-write under exclusive lock
+                let mut tool_result = None;
+                let entries = with_exclusive_entries(filename, |entries| {
+                    if entries.iter().any(|e| e == &content_val) {
+                        tool_result = Some(CallToolResult::success(vec![Content::text(
+                            success_text(target, entries, budget, "Entry already exists (no duplicate added)."),
+                        )]));
+                        return None;
+                    }
 
-                if entries.iter().any(|e| e == &content_val) {
-                    return Ok(CallToolResult::success(vec![Content::text(success_text(
-                        target,
-                        &entries,
-                        budget,
-                        "Entry already exists (no duplicate added).",
-                    ))]));
-                }
+                    let mut test = entries.clone();
+                    test.push(content_val.clone());
+                    if char_count(&test) > budget {
+                        let current = char_count(entries);
+                        let previews: String = entries
+                            .iter()
+                            .enumerate()
+                            .map(|(i, e)| {
+                                let p: String = e.chars().take(77).collect();
+                                if e.len() > 80 {
+                                    format!("  {}. {}...", i + 1, p)
+                                } else {
+                                    format!("  {}. {}", i + 1, e)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        tool_result = Some(CallToolResult::error(vec![Content::text(format!(
+                            "Memory at {}/{} chars. Adding ({} chars) would exceed limit. Replace or remove first.\n\n{}",
+                            current, budget, content_val.len(), previews
+                        ))]));
+                        return None;
+                    }
 
-                let mut test = entries.clone();
-                test.push(content_val.clone());
-                if char_count(&test) > budget {
-                    let current = char_count(&entries);
-                    let previews: String = entries
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| {
-                            let p: String = e.chars().take(77).collect();
-                            if e.len() > 80 {
-                                format!("  {}. {}...", i + 1, p)
-                            } else {
-                                format!("  {}. {}", i + 1, e)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Memory at {}/{} chars. Adding ({} chars) would exceed limit. Replace or remove first.\n\n{}",
-                        current, budget, content_val.len(), previews
-                    ))]));
-                }
-
-                entries.push(content_val);
-                write_entries(filename, &entries).map_err(|e| {
+                    entries.push(content_val.clone());
+                    Some(entries.clone())
+                }).map_err(|e| {
                     warn!("Failed to write memory: {}", e);
                     Error::TransportClosed
                 })?;
 
-                Ok(CallToolResult::success(vec![Content::text(success_text(
-                    target,
-                    &entries,
-                    budget,
-                    "Entry added.",
-                ))]))
+                if let Some(result) = tool_result {
+                    Ok(result)
+                } else {
+                    Ok(CallToolResult::success(vec![Content::text(success_text(
+                        target,
+                        &entries,
+                        budget,
+                        "Entry added.",
+                    ))]))
+                }
             }
 
             "replace" => {
@@ -423,54 +475,65 @@ impl McpClientTrait for AdaptiveMemoryClient {
                     return Ok(CallToolResult::error(vec![Content::text(err)]));
                 }
 
-                let mut entries = read_entries_locked(filename);
-                let matches: Vec<usize> = entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.contains(&old_text))
-                    .map(|(i, _)| i)
-                    .collect();
+                let mut tool_result = None;
+                let entries = with_exclusive_entries(filename, |entries| {
+                    let matches: Vec<usize> = entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.contains(&old_text))
+                        .map(|(i, _)| i)
+                        .collect();
 
-                if matches.is_empty() {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "No entry matched '{}'.",
-                        old_text
-                    ))]));
-                }
-                if matches.len() > 1 {
-                    let unique: std::collections::HashSet<&str> =
-                        matches.iter().map(|&i| entries[i].as_str()).collect();
-                    if unique.len() > 1 {
-                        return Ok(CallToolResult::error(vec![Content::text(format!(
-                            "Multiple entries matched '{}'. Be more specific.",
+                    if matches.is_empty() {
+                        tool_result = Some(CallToolResult::error(vec![Content::text(format!(
+                            "No entry matched '{}'.",
                             old_text
                         ))]));
+                        return None;
                     }
-                }
+                    if matches.len() > 1 {
+                        let unique: std::collections::HashSet<&str> =
+                            matches.iter().map(|&i| entries[i].as_str()).collect();
+                        if unique.len() > 1 {
+                            tool_result =
+                                Some(CallToolResult::error(vec![Content::text(format!(
+                                    "Multiple entries matched '{}'. Be more specific.",
+                                    old_text
+                                ))]));
+                            return None;
+                        }
+                    }
 
-                let idx = matches[0];
-                let mut test = entries.clone();
-                test[idx] = content_val.clone();
-                if char_count(&test) > budget {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Replacement would put memory at {}/{} chars. Shorten or remove first.",
-                        char_count(&test),
-                        budget
-                    ))]));
-                }
+                    let idx = matches[0];
+                    let mut test = entries.clone();
+                    test[idx] = content_val.clone();
+                    if char_count(&test) > budget {
+                        tool_result = Some(CallToolResult::error(vec![Content::text(format!(
+                            "Replacement would put memory at {}/{} chars. Shorten or remove first.",
+                            char_count(&test),
+                            budget
+                        ))]));
+                        return None;
+                    }
 
-                entries[idx] = content_val;
-                write_entries(filename, &entries).map_err(|e| {
+                    entries[idx] = content_val.clone();
+                    Some(entries.clone())
+                })
+                .map_err(|e| {
                     warn!("Failed to write memory: {}", e);
                     Error::TransportClosed
                 })?;
 
-                Ok(CallToolResult::success(vec![Content::text(success_text(
-                    target,
-                    &entries,
-                    budget,
-                    "Entry replaced.",
-                ))]))
+                if let Some(result) = tool_result {
+                    Ok(result)
+                } else {
+                    Ok(CallToolResult::success(vec![Content::text(success_text(
+                        target,
+                        &entries,
+                        budget,
+                        "Entry replaced.",
+                    ))]))
+                }
             }
 
             "remove" => {
@@ -480,43 +543,53 @@ impl McpClientTrait for AdaptiveMemoryClient {
                     )]));
                 }
 
-                let mut entries = read_entries_locked(filename);
-                let matches: Vec<usize> = entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.contains(&old_text))
-                    .map(|(i, _)| i)
-                    .collect();
+                let mut tool_result = None;
+                let entries = with_exclusive_entries(filename, |entries| {
+                    let matches: Vec<usize> = entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.contains(&old_text))
+                        .map(|(i, _)| i)
+                        .collect();
 
-                if matches.is_empty() {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "No entry matched '{}'.",
-                        old_text
-                    ))]));
-                }
-                if matches.len() > 1 {
-                    let unique: std::collections::HashSet<&str> =
-                        matches.iter().map(|&i| entries[i].as_str()).collect();
-                    if unique.len() > 1 {
-                        return Ok(CallToolResult::error(vec![Content::text(format!(
-                            "Multiple entries matched '{}'. Be more specific.",
+                    if matches.is_empty() {
+                        tool_result = Some(CallToolResult::error(vec![Content::text(format!(
+                            "No entry matched '{}'.",
                             old_text
                         ))]));
+                        return None;
                     }
-                }
+                    if matches.len() > 1 {
+                        let unique: std::collections::HashSet<&str> =
+                            matches.iter().map(|&i| entries[i].as_str()).collect();
+                        if unique.len() > 1 {
+                            tool_result =
+                                Some(CallToolResult::error(vec![Content::text(format!(
+                                    "Multiple entries matched '{}'. Be more specific.",
+                                    old_text
+                                ))]));
+                            return None;
+                        }
+                    }
 
-                entries.remove(matches[0]);
-                write_entries(filename, &entries).map_err(|e| {
+                    entries.remove(matches[0]);
+                    Some(entries.clone())
+                })
+                .map_err(|e| {
                     warn!("Failed to write memory: {}", e);
                     Error::TransportClosed
                 })?;
 
-                Ok(CallToolResult::success(vec![Content::text(success_text(
-                    target,
-                    &entries,
-                    budget,
-                    "Entry removed.",
-                ))]))
+                if let Some(result) = tool_result {
+                    Ok(result)
+                } else {
+                    Ok(CallToolResult::success(vec![Content::text(success_text(
+                        target,
+                        &entries,
+                        budget,
+                        "Entry removed.",
+                    ))]))
+                }
             }
 
             _ => Ok(CallToolResult::error(vec![Content::text(format!(

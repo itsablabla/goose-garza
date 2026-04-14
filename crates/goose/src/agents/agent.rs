@@ -153,6 +153,8 @@ pub struct Agent {
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
     container: Mutex<Option<Container>>,
+    /// Counts user turns since last background memory review (resets after firing).
+    pub(super) turns_since_memory_review: std::sync::atomic::AtomicU32,
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +253,7 @@ impl Agent {
                 provider.clone(),
             ),
             container: Mutex::new(None),
+            turns_since_memory_review: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -1807,10 +1810,11 @@ impl Agent {
             }
 
             // Spawn background knowledge review if triggers are met
-            // Memory review: fires after N user turns
-            // Skill review: fires after N tool iterations (complex work)
+            // Memory review: fires after N user turns (resets after firing)
+            // Skill review: fires after N tool iterations in this reply (complex work)
+            let turns_since = self.turns_since_memory_review.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let should_review_memory =
-                turns_taken >= super::knowledge_review::DEFAULT_MEMORY_REVIEW_INTERVAL;
+                turns_since >= super::knowledge_review::DEFAULT_MEMORY_REVIEW_INTERVAL;
 
             let final_tool_count = conversation.messages().iter()
                 .flat_map(|m| m.content.iter())
@@ -1821,6 +1825,9 @@ impl Agent {
                 final_tool_count as u32 >= super::knowledge_review::DEFAULT_SKILL_REVIEW_ITERATIONS;
 
             if should_review_memory || should_review_skills {
+                if should_review_memory {
+                    self.turns_since_memory_review.store(0, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Ok(provider) = self.provider().await {
                     super::knowledge_review::spawn_background_review(
                         provider,
