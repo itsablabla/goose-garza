@@ -643,15 +643,8 @@ fn truncate_output(
 
     let output_path = save_full_output(full_output, label, output_dir)?;
 
-    let head_lines = OUTPUT_PREVIEW_LINES * 2 / 5; // 20 lines (40%)
-    let tail_lines = OUTPUT_PREVIEW_LINES - head_lines; // 30 lines (60%)
-    let dropped = total_lines - head_lines - tail_lines;
-    let head = lines[..head_lines].join("\n");
-    let tail = lines[total_lines - tail_lines..].join("\n");
-    let preview = format!(
-        "{head}\n\n... [{dropped} lines truncated, full output saved to {path}] ...\n\n{tail}",
-        path = output_path.display(),
-    );
+    let preview_start = total_lines.saturating_sub(OUTPUT_PREVIEW_LINES);
+    let preview = lines[preview_start..].join("\n");
 
     let reason = if exceeded_lines {
         format!("Output exceeded {OUTPUT_LIMIT_LINES} line limit ({total_lines} lines total).")
@@ -783,12 +776,9 @@ mod tests {
         let result = render_output(&input, "test_lines", dir.path()).unwrap();
         let preview = &result.text;
 
-        // Head (20 lines) + blank + truncation notice + blank + tail (30 lines) = 53 lines
-        assert!(preview.starts_with("line 0"));
-        assert!(preview.contains("line 19")); // last head line
-        assert!(preview.contains("lines truncated"));
-        assert!(preview.contains("line 2470")); // first tail line
-        assert!(preview.contains("line 2499")); // last tail line
+        assert_eq!(preview.lines().count(), OUTPUT_PREVIEW_LINES);
+        assert!(preview.starts_with("line 2450"));
+        assert!(preview.contains("line 2499"));
 
         let info = result
             .truncation
