@@ -72,6 +72,10 @@ dev: build-dev
     #!/usr/bin/env bash
     set -euo pipefail
 
+    if [[ -z "${GOOSE_BIN:-}" ]]; then
+        export GOOSE_BIN="$(cargo metadata --format-version 1 | jq -r '.target_directory')/debug/goose"
+    fi
+
     # Derive a stable port from the working directory so the same worktree
     # always gets the same port. This avoids changing TAURI_CONFIG between
     # runs, which would invalidate Cargo's build cache and trigger a full
@@ -105,6 +109,10 @@ dev: build-dev
 dev-debug: build-dev
     #!/usr/bin/env bash
     set -euo pipefail
+
+    if [[ -z "${GOOSE_BIN:-}" ]]; then
+        export GOOSE_BIN="$(cargo metadata --format-version 1 | jq -r '.target_directory')/debug/goose"
+    fi
 
     VITE_PORT=$(python3 -c "import hashlib,os; h=int(hashlib.sha256(os.getcwd().encode()).hexdigest(),16); print(10000 + h % 55000)")
     export VITE_PORT
