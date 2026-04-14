@@ -1,6 +1,4 @@
-# Default recipe
-default:
-    @just --list
+import '../../Justfile'
 
 # ── Dev Environment ──────────────────────────────────────────
 
@@ -70,7 +68,7 @@ test-e2e-all:
 # ── Run ──────────────────────────────────────────────────────
 
 # Start the desktop app in dev mode
-dev:
+dev: build-dev
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -104,7 +102,7 @@ dev:
     pnpm tauri dev --features app-test-driver --config "$TAURI_CONFIG"
 
 # Start the desktop app with dev config
-dev-debug:
+dev-debug: build-dev
     #!/usr/bin/env bash
     set -euo pipefail
 
