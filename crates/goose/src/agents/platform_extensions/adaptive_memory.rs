@@ -260,10 +260,17 @@ fn render_block(target: &str, entries: &[String], budget: usize) -> String {
 
 pub struct AdaptiveMemoryClient {
     info: InitializeResult,
+    working_dir: PathBuf,
 }
 
 impl AdaptiveMemoryClient {
-    pub fn new(_context: PlatformExtensionContext) -> anyhow::Result<Self> {
+    pub fn new(context: PlatformExtensionContext) -> anyhow::Result<Self> {
+        let working_dir = context
+            .session
+            .as_ref()
+            .map(|s| s.working_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
         let user_entries = read_entries("USER.md");
         let memory_entries = read_entries("MEMORY.md");
 
@@ -296,7 +303,7 @@ impl AdaptiveMemoryClient {
             )
             .with_instructions(instructions);
 
-        Ok(Self { info })
+        Ok(Self { info, working_dir })
     }
 }
 
@@ -347,8 +354,59 @@ impl McpClientTrait for AdaptiveMemoryClient {
             schema.as_object().unwrap().clone(),
         );
 
+        let create_schema = serde_json::json!({
+            "type": "object",
+            "required": ["name", "content"],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name (lowercase, hyphens/underscores, max 64 chars). e.g. 'docker-networking'"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full SKILL.md content including YAML frontmatter (---\\nname: ...\\ndescription: ...\\n---\\nBody...)"
+                }
+            }
+        });
+
+        let create_tool = Tool::new(
+            "create_skill",
+            "Create a new skill from experience. Use after complex tasks (5+ tool calls, error recovery, \
+             non-obvious workflows) to save a reusable approach. The content must include YAML frontmatter \
+             with name and description fields."
+                .to_string(),
+            create_schema.as_object().unwrap().clone(),
+        );
+
+        let patch_schema = serde_json::json!({
+            "type": "object",
+            "required": ["name", "old_text", "new_text"],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the skill to patch"
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Text to find in the skill (must match uniquely)"
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text"
+                }
+            }
+        });
+
+        let patch_tool = Tool::new(
+            "patch_skill",
+            "Update an existing skill by replacing a section of text. Use when you loaded a skill and \
+             found it wrong, incomplete, or outdated. The old_text must match exactly one location in the skill."
+                .to_string(),
+            patch_schema.as_object().unwrap().clone(),
+        );
+
         Ok(ListToolsResult {
-            tools: vec![tool],
+            tools: vec![tool, create_tool, patch_tool],
             next_cursor: None,
             meta: None,
         })
@@ -361,11 +419,20 @@ impl McpClientTrait for AdaptiveMemoryClient {
         arguments: Option<JsonObject>,
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
-        if name != "memory" {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Unknown tool: {}",
-                name
-            ))]));
+        match name {
+            "create_skill" => {
+                return super::skills::handle_create_skill(arguments).await;
+            }
+            "patch_skill" => {
+                return super::skills::handle_patch_skill(&self.working_dir, arguments).await;
+            }
+            "memory" => {}
+            _ => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Unknown tool: {}",
+                    name
+                ))]));
+            }
         }
 
         let args = arguments.unwrap_or_default();

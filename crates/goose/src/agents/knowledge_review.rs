@@ -391,8 +391,8 @@ mod tests {
             make_tool("create_skill"),
             make_tool("patch_skill"),
             make_tool("load_skill"),
-            make_tool("skills__create_skill"),
-            make_tool("skills__patch_skill"),
+            make_tool("adaptive_memory__create_skill"),
+            make_tool("adaptive_memory__patch_skill"),
             make_tool("skills__load_skill"),
             make_tool("read_file"),
             make_tool("write_file"),
@@ -427,8 +427,8 @@ mod tests {
                 "create_skill",
                 "patch_skill",
                 "load_skill",
-                "skills__create_skill",
-                "skills__patch_skill",
+                "adaptive_memory__create_skill",
+                "adaptive_memory__patch_skill",
                 "skills__load_skill",
             ]
         );
@@ -451,8 +451,8 @@ mod tests {
                 "create_skill",
                 "patch_skill",
                 "load_skill",
-                "skills__create_skill",
-                "skills__patch_skill",
+                "adaptive_memory__create_skill",
+                "adaptive_memory__patch_skill",
                 "skills__load_skill",
             ]
         );
