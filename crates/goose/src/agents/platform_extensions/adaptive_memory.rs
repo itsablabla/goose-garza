@@ -276,10 +276,16 @@ impl AdaptiveMemoryClient {
 
         let mut instructions = String::from(
             "You have persistent adaptive memory across sessions.\n\
+             The most valuable memory prevents the user from having to repeat themselves.\n\
              Save proactively — don't wait to be asked.\n\n\
-             TWO TARGETS:\n\
-             - 'user': who the user is — name, role, preferences, communication style\n\
-             - 'memory': your notes — environment facts, project conventions, tool quirks\n\n\
+             WHEN TO SAVE:\n\
+             - User corrects you or says 'remember this' / 'don't do that again' → save immediately\n\
+             - User shares a preference, habit, or personal detail (name, role, timezone, coding style) → target: user\n\
+             - You discover something about the environment (OS, installed tools, project structure, build commands) → target: memory\n\
+             - You learn a convention, API quirk, or workflow specific to this user's setup → target: memory\n\
+             - You identify a stable fact useful in future sessions → target: memory\n\n\
+             PRIORITY: User preferences and corrections > environment facts > procedural knowledge.\n\n\
+             Do NOT save: task progress, session outcomes, temporary state, things easily re-discovered.\n\n\
              ACTIONS: add, replace (old_text identifies entry), remove (old_text identifies entry)\n\n\
              Memory has hard size limits. Adds that exceed the limit are REJECTED.\n\
              Replace or remove existing entries to make room first.\n",
@@ -343,13 +349,21 @@ impl McpClientTrait for AdaptiveMemoryClient {
         let tool = Tool::new(
             "memory",
             "Save durable information to persistent memory that survives across sessions. \
-             Memory is injected into every turn, so keep it compact.\n\n\
-             WHEN TO SAVE (proactively):\n\
-             - User corrects you or says 'remember this'\n\
-             - User shares preferences, habits, personal details → target: user\n\
-             - You discover environment facts, tool quirks → target: memory\n\n\
-             Do NOT save: task progress, session outcomes, temporary state.\n\
-             SKIP: trivial info, things easily re-discovered."
+             Memory is injected into every future turn, so keep entries compact and focused on \
+             facts that will still matter later.\n\n\
+             WHEN TO SAVE (do this proactively, don't wait to be asked):\n\
+             - User corrects you or says 'remember this' / 'don't do that again'\n\
+             - User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n\
+             - You discover something about the environment (OS, installed tools, project structure)\n\
+             - You learn a convention, API quirk, or workflow specific to this user's setup\n\
+             - You identify a stable fact that will be useful again in future sessions\n\n\
+             PRIORITY: User preferences and corrections > environment facts > procedural knowledge. \
+             The most valuable memory prevents the user from having to repeat themselves.\n\n\
+             TWO TARGETS:\n\
+             - 'user': who the user is — name, role, preferences, communication style, pet peeves\n\
+             - 'memory': your notes — environment facts, project conventions, tool quirks, lessons learned\n\n\
+             Do NOT save: task progress, session outcomes, completed-work logs, or temporary state.\n\
+             SKIP: trivial/obvious info, things easily re-discovered, raw data dumps."
                 .to_string(),
             schema.as_object().unwrap().clone(),
         );
