@@ -1473,14 +1473,37 @@ impl GooseAcpAgent {
         // The ACP session_id IS the thread ID.
         let thread_id = args.session_id.0.to_string();
 
-        let thread = self
-            .thread_manager
-            .get_thread(&thread_id)
-            .await
-            .map_err(|_| {
-                sacp::Error::resource_not_found(Some(thread_id.clone()))
-                    .data(format!("Session not found: {}", thread_id))
-            })?;
+        let thread = match self.thread_manager.get_thread(&thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => {
+                // Check if the requested ID is a legacy session ID (e.g.
+                // "20260415_1") that was sent instead of a thread UUID.
+                // Return a diagnostic error so the caller knows what happened.
+                if let Ok(session) = self
+                    .session_manager
+                    .get_session(&thread_id, false)
+                    .await
+                {
+                    let detail = match &session.thread_id {
+                        Some(tid) => format!(
+                            "Session {} has linked thread {}, but was sent as the \
+                             session_id instead of the thread UUID",
+                            thread_id, tid
+                        ),
+                        None => format!(
+                            "Session {} exists but has no linked thread — \
+                             it may not have been fully created via ACP",
+                            thread_id
+                        ),
+                    };
+                    return Err(sacp::Error::resource_not_found(Some(thread_id)).data(detail));
+                }
+                return Err(
+                    sacp::Error::resource_not_found(Some(thread_id.clone()))
+                        .data(format!("Session not found: {}", thread_id)),
+                );
+            }
+        };
 
         // Reuse the thread's current internal session so the agent retains
         // conversation context (compaction state, full message history, etc.).
