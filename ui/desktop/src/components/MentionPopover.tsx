@@ -43,6 +43,7 @@ const typeOrder: Record<DisplayItemType, number> = {
   Builtin: 2,
   Skill: 3,
   Recipe: 4,
+  Agent: 5,
 };
 
 export interface DisplayItem {
@@ -449,6 +450,9 @@ const MentionPopover = forwardRef<
     }, [items, query, currentWorkingDir]);
 
     const getSelectionText = (item: DisplayItem): string => {
+      if (item.itemType === 'Agent') {
+        return '@' + item.name + ' ';
+      }
       if (item.itemType === 'Skill') {
         return `Use the ${item.name} skill to `;
       }
@@ -494,9 +498,24 @@ const MentionPopover = forwardRef<
             }));
             setItems(commandItems);
           } else {
-            const scannedFiles = await scanDirectoryFromRoot(currentWorkingDir || getDefaultStartPath());
+            // Fetch agents from server and scan files in parallel
+            const [agentResponse, scannedFiles] = await Promise.all([
+              getSlashCommands({
+                query: { working_dir: currentWorkingDir },
+                throwOnError: true,
+              }).catch(() => null),
+              scanDirectoryFromRoot(currentWorkingDir || getDefaultStartPath()),
+            ]);
             if (cancelled) return;
-            setItems(scannedFiles);
+            const agentItems: DisplayItem[] = (agentResponse?.data?.commands || [])
+              .filter((cmd) => cmd.command_type === 'Agent')
+              .map((cmd) => ({
+                name: cmd.command,
+                extra: cmd.help,
+                itemType: cmd.command_type,
+                relativePath: cmd.command,
+              }));
+            setItems([...agentItems, ...scannedFiles]);
           }
         } catch (error) {
           if (!cancelled) {
