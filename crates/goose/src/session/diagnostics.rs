@@ -11,8 +11,8 @@ use std::io::Cursor;
 use std::io::Write;
 use std::path::PathBuf;
 use utoipa::ToSchema;
-use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SystemInfo {
