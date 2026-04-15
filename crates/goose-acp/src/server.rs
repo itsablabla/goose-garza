@@ -124,6 +124,7 @@ pub struct GooseAcpAgent {
     session_manager: Arc<SessionManager>,
     thread_manager: Arc<goose::session::ThreadManager>,
     permission_manager: Arc<PermissionManager>,
+    scheduler: Arc<goose::scheduler::Scheduler>,
     goose_mode: GooseMode,
     disable_session_naming: bool,
 }
@@ -615,6 +616,13 @@ impl GooseAcpAgent {
         ));
         let permission_manager = Arc::new(PermissionManager::new(config_dir.clone()));
 
+        let schedule_storage = goose::scheduler::get_default_scheduler_storage_path()
+            .map_err(|e| anyhow::anyhow!("Failed to get scheduler storage path: {e}"))?;
+        let scheduler =
+            goose::scheduler::Scheduler::new(schedule_storage, session_manager.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create scheduler: {e}"))?;
+
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             provider_factory,
@@ -625,6 +633,7 @@ impl GooseAcpAgent {
             session_manager,
             thread_manager,
             permission_manager,
+            scheduler,
             goose_mode,
             disable_session_naming,
         })
@@ -632,6 +641,20 @@ impl GooseAcpAgent {
 
     fn load_config(&self) -> Result<Config> {
         Config::new(self.config_dir.join(CONFIG_YAML_NAME), "goose").map_err(Into::into)
+    }
+
+    /// Look up a recipe file path by its ID (filename stem) by scanning local recipes.
+    fn find_recipe_path(&self, id: &str) -> Result<std::path::PathBuf, sacp::Error> {
+        let recipes = goose::recipe::local_recipes::list_local_recipes()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        for (path, _recipe) in &recipes {
+            if let Some(stem) = path.file_stem() {
+                if stem.to_string_lossy() == id {
+                    return Ok(path.clone());
+                }
+            }
+        }
+        Err(sacp::Error::invalid_params().data(format!("Recipe '{}' not found", id)))
     }
 
     async fn create_provider(
@@ -2650,6 +2673,1260 @@ impl GooseAcpAgent {
             .await
             .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
         Ok(EmptyResponse {})
+    }
+
+    // -----------------------------------------------------------------------
+    // Config management
+    // -----------------------------------------------------------------------
+
+    #[custom_method(BackupConfigRequest)]
+    async fn on_backup_config(
+        &self,
+        _req: BackupConfigRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        let config_path = self.config_dir.join(CONFIG_YAML_NAME);
+        let backup_path = config_path.with_extension("yaml.bak");
+        std::fs::copy(&config_path, &backup_path)
+            .map_err(|e| sacp::Error::internal_error().data(format!("backup failed: {e}")))?;
+        Ok(ConfigMessageResponse {
+            message: format!("Config backed up to {}", backup_path.display()),
+        })
+    }
+
+    #[custom_method(RecoverConfigRequest)]
+    async fn on_recover_config(
+        &self,
+        _req: RecoverConfigRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        let config = self.load_config().map_err(|e| {
+            sacp::Error::internal_error().data(format!("Failed to load config: {e}"))
+        })?;
+        let values = config
+            .all_values()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let keys: Vec<_> = values.keys().cloned().collect();
+        Ok(ConfigMessageResponse {
+            message: format!("Recovered {} config keys", keys.len()),
+        })
+    }
+
+    #[custom_method(ValidateConfigRequest)]
+    async fn on_validate_config(
+        &self,
+        _req: ValidateConfigRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        // Try to load the config; if it succeeds the file is valid.
+        match self.load_config() {
+            Ok(_) => Ok(ConfigMessageResponse {
+                message: "Config is valid".to_string(),
+            }),
+            Err(e) => Ok(ConfigMessageResponse {
+                message: format!("Config validation error: {e}"),
+            }),
+        }
+    }
+
+    #[custom_method(InitConfigRequest)]
+    async fn on_init_config(
+        &self,
+        _req: InitConfigRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        let init_values = goose::config::base::load_init_config_from_workspace()
+            .unwrap_or_default();
+        let config = self.load_config().map_err(|e| {
+            sacp::Error::internal_error().data(format!("Failed to load config: {e}"))
+        })?;
+        config
+            .initialize_if_empty(init_values)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ConfigMessageResponse {
+            message: "Config initialized".to_string(),
+        })
+    }
+
+    #[custom_method(ReadAllConfigRequest)]
+    async fn on_read_all_config(
+        &self,
+        _req: ReadAllConfigRequest,
+    ) -> Result<ReadAllConfigResponse, sacp::Error> {
+        let config = self.load_config().map_err(|e| {
+            sacp::Error::internal_error().data(format!("Failed to load config: {e}"))
+        })?;
+        let values = config
+            .all_values()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ReadAllConfigResponse { config: values })
+    }
+
+    #[custom_method(AddConfigExtensionRequest)]
+    async fn on_add_config_extension(
+        &self,
+        req: AddConfigExtensionRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let config: goose::agents::ExtensionConfig = serde_json::from_value(req.config)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad config: {e}")))?;
+        goose::config::extensions::set_extension(goose::config::ExtensionEntry {
+            enabled: req.enabled,
+            config,
+        });
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(RemoveConfigExtensionRequest)]
+    async fn on_remove_config_extension(
+        &self,
+        req: RemoveConfigExtensionRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let key = goose::config::extensions::name_to_key(&req.name);
+        goose::config::extensions::remove_extension(&key);
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(GetSlashCommandsRequest)]
+    async fn on_get_slash_commands(
+        &self,
+        req: GetSlashCommandsRequest,
+    ) -> Result<GetSlashCommandsResponse, sacp::Error> {
+        let mut all = Vec::new();
+
+        // Recipe-based slash commands (Serialize is derived)
+        let recipe_commands = goose::slash_commands::list_commands();
+        for cmd in &recipe_commands {
+            let v = serde_json::to_value(cmd)
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            all.push(v);
+        }
+
+        // Builtin execute commands (not Serialize - build JSON manually)
+        let builtin_commands = goose::agents::execute_commands::list_commands();
+        for cmd in builtin_commands {
+            all.push(serde_json::json!({
+                "command": cmd.name,
+                "help": cmd.description,
+                "command_type": "builtin"
+            }));
+        }
+
+        // Skills (not Serialize - build JSON manually)
+        let working_dir_path = req.working_dir.as_deref().map(std::path::Path::new);
+        let skill_commands =
+            goose::agents::platform_extensions::skills::list_installed_skills(working_dir_path);
+        for cmd in &skill_commands {
+            all.push(serde_json::json!({
+                "command": cmd.name,
+                "help": cmd.description,
+                "command_type": "skill"
+            }));
+        }
+
+        Ok(GetSlashCommandsResponse { commands: all })
+    }
+
+    #[custom_method(UpsertPermissionsRequest)]
+    async fn on_upsert_permissions(
+        &self,
+        req: UpsertPermissionsRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let pm = goose::config::permission::PermissionManager::instance();
+        for entry in req.tool_permissions {
+            let level: goose::config::permission::PermissionLevel =
+                serde_json::from_value(serde_json::Value::String(entry.permission.clone()))
+                    .map_err(|e| {
+                        sacp::Error::invalid_params()
+                            .data(format!("invalid permission '{}': {e}", entry.permission))
+                    })?;
+            pm.update_user_permission(&entry.tool_name, level);
+        }
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(GetModelInfoRequest)]
+    async fn on_get_model_info(
+        &self,
+        req: GetModelInfoRequest,
+    ) -> Result<GetModelInfoResponse, sacp::Error> {
+        let canonical = goose::providers::canonical::maybe_get_canonical_model(&req.provider, &req.model);
+        match canonical {
+            Some(info) => {
+                let v = serde_json::to_value(&info)
+                    .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+                Ok(GetModelInfoResponse {
+                    model_info: Some(v),
+                    source: "canonical".to_string(),
+                })
+            }
+            None => Ok(GetModelInfoResponse {
+                model_info: None,
+                source: "none".to_string(),
+            }),
+        }
+    }
+
+    #[custom_method(CheckProviderRequest)]
+    async fn on_check_provider(
+        &self,
+        req: CheckProviderRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        goose::providers::create_with_default_model(&req.provider, Vec::new())
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(SetProviderRequest)]
+    async fn on_set_provider(
+        &self,
+        req: SetProviderRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        // Validate that provider can be instantiated
+        goose::providers::create_with_default_model(&req.provider, Vec::new())
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let config = self.load_config().map_err(|e| {
+            sacp::Error::internal_error().data(format!("Failed to load config: {e}"))
+        })?;
+        config
+            .set_goose_provider(req.provider)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        config
+            .set_goose_model(req.model)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(CleanupProviderCacheRequest)]
+    async fn on_cleanup_provider_cache(
+        &self,
+        req: CleanupProviderCacheRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        goose::providers::cleanup_provider(&req.provider_name)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ConfigMessageResponse {
+            message: format!("Cleaned up cache for provider '{}'", req.provider_name),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Custom providers
+    // -----------------------------------------------------------------------
+
+    #[custom_method(CreateCustomProviderRequest)]
+    async fn on_create_custom_provider(
+        &self,
+        req: CreateCustomProviderRequest,
+    ) -> Result<CreateCustomProviderResponse, sacp::Error> {
+        let params = goose::config::declarative_providers::CreateCustomProviderParams {
+            engine: req.engine,
+            display_name: req.display_name,
+            api_url: req.api_url,
+            api_key: req.api_key,
+            models: req.models,
+            supports_streaming: req.supports_streaming,
+            headers: req.headers,
+            requires_auth: req.requires_auth,
+            catalog_provider_id: req.catalog_provider_id,
+            base_path: req.base_path,
+        };
+        let result = goose::config::declarative_providers::create_custom_provider(params)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let provider_name = result.name.clone();
+        goose::providers::refresh_custom_providers()
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(CreateCustomProviderResponse { provider_name })
+    }
+
+    #[custom_method(GetCustomProviderRequest)]
+    async fn on_get_custom_provider(
+        &self,
+        req: GetCustomProviderRequest,
+    ) -> Result<GetCustomProviderResponse, sacp::Error> {
+        let provider = goose::config::declarative_providers::load_provider(&req.id)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let v = serde_json::to_value(&provider)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(GetCustomProviderResponse { provider: v })
+    }
+
+    #[custom_method(UpdateCustomProviderRequest)]
+    async fn on_update_custom_provider(
+        &self,
+        req: UpdateCustomProviderRequest,
+    ) -> Result<ConfigMessageResponse, sacp::Error> {
+        let params = goose::config::declarative_providers::UpdateCustomProviderParams {
+            id: req.id,
+            engine: req.engine,
+            display_name: req.display_name,
+            api_url: req.api_url,
+            api_key: req.api_key,
+            models: req.models,
+            supports_streaming: req.supports_streaming,
+            headers: req.headers,
+            requires_auth: req.requires_auth,
+            catalog_provider_id: req.catalog_provider_id,
+            base_path: req.base_path,
+        };
+        goose::config::declarative_providers::update_custom_provider(params)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        goose::providers::refresh_custom_providers()
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ConfigMessageResponse {
+            message: "Custom provider updated".to_string(),
+        })
+    }
+
+    #[custom_method(RemoveCustomProviderRequest)]
+    async fn on_remove_custom_provider(
+        &self,
+        req: RemoveCustomProviderRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        goose::config::declarative_providers::remove_custom_provider(&req.id)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        goose::providers::refresh_custom_providers()
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(GetProviderCatalogRequest)]
+    async fn on_get_provider_catalog(
+        &self,
+        req: GetProviderCatalogRequest,
+    ) -> Result<GetProviderCatalogResponse, sacp::Error> {
+        let format = match req.format.as_deref() {
+            Some("openai") | Some("openai_compatible") => {
+                Some(goose::providers::catalog::ProviderFormat::OpenAI)
+            }
+            Some("anthropic") => Some(goose::providers::catalog::ProviderFormat::Anthropic),
+            Some("ollama") => Some(goose::providers::catalog::ProviderFormat::Ollama),
+            Some(other) => {
+                return Err(
+                    sacp::Error::invalid_params().data(format!("unknown format: {other}"))
+                )
+            }
+            None => None,
+        };
+        let entries = if let Some(fmt) = format {
+            goose::providers::catalog::get_providers_by_format(fmt).await
+        } else {
+            // Return all formats combined
+            let mut all = Vec::new();
+            for fmt in [
+                goose::providers::catalog::ProviderFormat::OpenAI,
+                goose::providers::catalog::ProviderFormat::Anthropic,
+                goose::providers::catalog::ProviderFormat::Ollama,
+            ] {
+                all.extend(goose::providers::catalog::get_providers_by_format(fmt).await);
+            }
+            all
+        };
+        let providers = entries
+            .into_iter()
+            .map(|e| serde_json::to_value(&e))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(GetProviderCatalogResponse { providers })
+    }
+
+    #[custom_method(GetProviderCatalogTemplateRequest)]
+    async fn on_get_provider_catalog_template(
+        &self,
+        req: GetProviderCatalogTemplateRequest,
+    ) -> Result<GetProviderCatalogTemplateResponse, sacp::Error> {
+        let template = goose::providers::catalog::get_provider_template(&req.id)
+            .ok_or_else(|| {
+                sacp::Error::invalid_params().data(format!("template '{}' not found", req.id))
+            })?;
+        let v = serde_json::to_value(&template)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(GetProviderCatalogTemplateResponse { template: v })
+    }
+
+    // -----------------------------------------------------------------------
+    // Prompts
+    // -----------------------------------------------------------------------
+
+    #[custom_method(ListPromptsRequest)]
+    async fn on_list_prompts(
+        &self,
+        _req: ListPromptsRequest,
+    ) -> Result<ListPromptsResponse, sacp::Error> {
+        let templates = goose::prompt_template::list_templates();
+        let prompts = templates
+            .into_iter()
+            .map(|t| serde_json::to_value(&t))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ListPromptsResponse { prompts })
+    }
+
+    #[custom_method(GetPromptRequest)]
+    async fn on_get_prompt(
+        &self,
+        req: GetPromptRequest,
+    ) -> Result<GetPromptResponse, sacp::Error> {
+        let template = goose::prompt_template::get_template(&req.name).ok_or_else(|| {
+            sacp::Error::invalid_params().data(format!("Prompt '{}' not found", req.name))
+        })?;
+        let content = template
+            .user_content
+            .clone()
+            .unwrap_or_else(|| template.default_content.clone());
+        Ok(GetPromptResponse {
+            name: req.name,
+            content,
+            default_content: template.default_content.clone(),
+            is_customized: template.is_customized,
+        })
+    }
+
+    #[custom_method(SavePromptRequest)]
+    async fn on_save_prompt(
+        &self,
+        req: SavePromptRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        goose::prompt_template::save_template(&req.name, &req.content)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(ResetPromptRequest)]
+    async fn on_reset_prompt(
+        &self,
+        req: ResetPromptRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        goose::prompt_template::reset_template(&req.name)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    // -----------------------------------------------------------------------
+    // Session operations
+    // -----------------------------------------------------------------------
+
+    #[custom_method(SearchSessionsRequest)]
+    async fn on_search_sessions(
+        &self,
+        req: SearchSessionsRequest,
+    ) -> Result<SearchSessionsResponse, sacp::Error> {
+        let after_date = req
+            .after_date
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let before_date = req
+            .before_date
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+        let results = self
+            .session_manager
+            .search_chat_history(
+                &req.query,
+                Some(req.limit),
+                after_date,
+                before_date,
+                None,
+                vec![SessionType::Acp],
+            )
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let mut sessions = Vec::new();
+        for result in results.results {
+            if let Ok(thread) = self.thread_manager.get_thread(&result.session_id).await {
+                let v = serde_json::to_value(&thread)
+                    .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+                sessions.push(v);
+            }
+        }
+        Ok(SearchSessionsResponse { sessions })
+    }
+
+    #[custom_method(GetSessionInsightsRequest)]
+    async fn on_get_session_insights(
+        &self,
+        _req: GetSessionInsightsRequest,
+    ) -> Result<GetSessionInsightsResponse, sacp::Error> {
+        let insights = self
+            .session_manager
+            .get_insights()
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let v = serde_json::to_value(&insights)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(GetSessionInsightsResponse { insights: v })
+    }
+
+    #[custom_method(RenameSessionRequest)]
+    async fn on_rename_session(
+        &self,
+        req: RenameSessionRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        if req.name.len() > 200 {
+            return Err(sacp::Error::invalid_params().data("Name must be 200 characters or fewer"));
+        }
+        self.thread_manager
+            .update_thread(&req.session_id, Some(req.name), Some(true), None)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(GooseForkSessionRequest)]
+    async fn on_goose_fork_session(
+        &self,
+        req: GooseForkSessionRequest,
+    ) -> Result<GooseForkSessionResponse, sacp::Error> {
+        let internal_id = self.internal_session_id(&req.session_id).await?;
+
+        let target_id = if req.copy {
+            let copied = self
+                .session_manager
+                .copy_session(&internal_id, format!("Fork of {}", req.session_id))
+                .await
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            copied.id
+        } else {
+            internal_id.clone()
+        };
+
+        if req.truncate {
+            if let Some(ts) = req.timestamp {
+                self.session_manager
+                    .truncate_conversation(&target_id, ts)
+                    .await
+                    .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            }
+        }
+
+        // If we copied, create a new thread for the fork
+        if req.copy {
+            let thread = self
+                .thread_manager
+                .create_thread(None, None, None)
+                .await
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            self.session_manager
+                .update(&target_id)
+                .thread_id(Some(thread.id.clone()))
+                .apply()
+                .await
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            Ok(GooseForkSessionResponse {
+                session_id: thread.id,
+            })
+        } else {
+            Ok(GooseForkSessionResponse {
+                session_id: req.session_id,
+            })
+        }
+    }
+
+    #[custom_method(UpdateRecipeValuesRequest)]
+    async fn on_update_recipe_values(
+        &self,
+        req: UpdateRecipeValuesRequest,
+    ) -> Result<UpdateRecipeValuesResponse, sacp::Error> {
+        let internal_id = self.internal_session_id(&req.session_id).await?;
+        self.session_manager
+            .update(&internal_id)
+            .user_recipe_values(Some(req.user_recipe_values))
+            .apply()
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let session = self
+            .session_manager
+            .get_session(&internal_id, false)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let recipe_val = serde_json::to_value(&session.recipe)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(UpdateRecipeValuesResponse { recipe: recipe_val })
+    }
+
+    // -----------------------------------------------------------------------
+    // Action required
+    // -----------------------------------------------------------------------
+
+    #[custom_method(ConfirmToolActionRequest)]
+    async fn on_confirm_tool_action(
+        &self,
+        req: ConfirmToolActionRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let agent = self.get_session_agent(&req.session_id, None).await?;
+        let principal_type: PrincipalType = if req.principal_type.is_empty() {
+            PrincipalType::Tool
+        } else {
+            serde_json::from_value(serde_json::Value::String(req.principal_type.clone()))
+                .unwrap_or(PrincipalType::Tool)
+        };
+        let action: Permission =
+            serde_json::from_value(serde_json::Value::String(req.action.clone())).map_err(|e| {
+                sacp::Error::invalid_params().data(format!("invalid action '{}': {e}", req.action))
+            })?;
+        agent
+            .handle_confirmation(
+                req.id,
+                PermissionConfirmation {
+                    principal_type,
+                    permission: action,
+                },
+            )
+            .await;
+        Ok(EmptyResponse {})
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent lifecycle / tool calls
+    // -----------------------------------------------------------------------
+
+    #[custom_method(CallToolRequest)]
+    async fn on_call_tool(
+        &self,
+        req: CallToolRequest,
+    ) -> Result<CallToolResponse, sacp::Error> {
+        let internal_id = self.internal_session_id(&req.session_id).await?;
+        let agent = self.get_session_agent(&req.session_id, None).await?;
+        let cancel_token = CancellationToken::new();
+
+        // Convert arguments to the expected JsonObject
+        let arguments: Option<rmcp::model::JsonObject> = match req.arguments {
+            serde_json::Value::Object(map) => Some(map.into_iter().collect()),
+            serde_json::Value::Null => None,
+            _ => None,
+        };
+
+        let mut tool_call = rmcp::model::CallToolRequestParams::new(req.name);
+        if let Some(args) = arguments {
+            tool_call = tool_call.with_arguments(args);
+        }
+
+        let ctx = goose::agents::ToolCallContext::new(internal_id, None, None);
+
+        let tool_result = agent
+            .extension_manager
+            .dispatch_tool_call(&ctx, tool_call, cancel_token)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let result = tool_result
+            .result
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let content: Vec<serde_json::Value> = result
+            .content
+            .into_iter()
+            .map(|c| serde_json::to_value(&c))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(CallToolResponse {
+            content,
+            structured_content: None,
+            is_error: result.is_error.unwrap_or(false),
+        })
+    }
+
+    #[custom_method(ListAppsRequest)]
+    async fn on_list_apps(
+        &self,
+        req: ListAppsRequest,
+    ) -> Result<ListAppsResponse, sacp::Error> {
+        let apps = if let Some(ref sid) = req.session_id {
+            let agent = self.get_session_agent(sid, None).await?;
+            let internal_id = self.internal_session_id(sid).await?;
+            goose::goose_apps::fetch_mcp_apps(&agent.extension_manager, &internal_id)
+                .await
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?
+        } else {
+            let cache = goose::goose_apps::McpAppCache::new()
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+            cache
+                .list_apps()
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?
+        };
+        let apps_json = apps
+            .into_iter()
+            .map(|a| serde_json::to_value(&a))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ListAppsResponse { apps: apps_json })
+    }
+
+    #[custom_method(ImportAppRequest)]
+    async fn on_import_app(
+        &self,
+        req: ImportAppRequest,
+    ) -> Result<ImportAppResponse, sacp::Error> {
+        let app = goose::goose_apps::GooseApp::from_html(&req.html)
+            .map_err(|e| sacp::Error::internal_error().data(e))?;
+        let cache = goose::goose_apps::McpAppCache::new()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let name = app.resource.name.clone();
+        cache
+            .store_app(&app)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ImportAppResponse {
+            name,
+            message: "App imported successfully".to_string(),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Scheduling
+    // -----------------------------------------------------------------------
+
+    #[custom_method(CreateScheduleRequest)]
+    async fn on_create_schedule(
+        &self,
+        req: CreateScheduleRequest,
+    ) -> Result<ScheduleJobResponse, sacp::Error> {
+        let recipe: goose::recipe::Recipe = serde_json::from_value(req.recipe)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad recipe: {e}")))?;
+        // Validate by round-tripping through YAML
+        let yaml = recipe
+            .to_yaml()
+            .map_err(|e| sacp::Error::invalid_params().data(e.to_string()))?;
+        let _ = goose::recipe::validate_recipe::validate_recipe_template_from_content(&yaml, None)
+            .map_err(|e| sacp::Error::invalid_params().data(e.to_string()))?;
+
+        let recipes_dir = goose::scheduler::get_default_scheduled_recipes_dir()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let file_path = recipes_dir.join(format!("{}.yaml", req.id));
+        let yaml = recipe
+            .to_yaml()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        std::fs::write(&file_path, &yaml)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        let job = goose::scheduler::ScheduledJob {
+            id: req.id.clone(),
+            source: file_path.display().to_string(),
+            cron: req.cron,
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+        };
+        self.scheduler
+            .add_scheduled_job(job, false)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+
+        // Re-fetch all jobs to return the newly added one
+        let jobs = self.scheduler.list_scheduled_jobs().await;
+        let last = jobs.into_iter().find(|j| j.id == req.id);
+        let v = match last {
+            Some(j) => serde_json::to_value(&j)
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?,
+            None => serde_json::Value::Null,
+        };
+        Ok(ScheduleJobResponse { job: v })
+    }
+
+    #[custom_method(ListSchedulesRequest)]
+    async fn on_list_schedules(
+        &self,
+        _req: ListSchedulesRequest,
+    ) -> Result<ListSchedulesResponse, sacp::Error> {
+        let jobs = self.scheduler.list_scheduled_jobs().await;
+        let jobs_json = jobs
+            .into_iter()
+            .map(|j| serde_json::to_value(&j))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ListSchedulesResponse { jobs: jobs_json })
+    }
+
+    #[custom_method(DeleteScheduleRequest)]
+    async fn on_delete_schedule(
+        &self,
+        req: DeleteScheduleRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        self.scheduler
+            .remove_scheduled_job(&req.id, true)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(UpdateScheduleRequest)]
+    async fn on_update_schedule(
+        &self,
+        req: UpdateScheduleRequest,
+    ) -> Result<ScheduleJobResponse, sacp::Error> {
+        self.scheduler
+            .update_schedule(&req.id, req.cron)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        // Re-fetch to return updated job
+        let jobs = self.scheduler.list_scheduled_jobs().await;
+        let job = jobs.into_iter().find(|j| j.id == req.id);
+        let v = match job {
+            Some(j) => serde_json::to_value(&j)
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?,
+            None => serde_json::Value::Null,
+        };
+        Ok(ScheduleJobResponse { job: v })
+    }
+
+    #[custom_method(RunNowRequest)]
+    async fn on_run_now(
+        &self,
+        req: RunNowRequest,
+    ) -> Result<RunNowResponse, sacp::Error> {
+        let session_id = self
+            .scheduler
+            .run_now(&req.id)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(RunNowResponse { session_id })
+    }
+
+    #[custom_method(PauseScheduleRequest)]
+    async fn on_pause_schedule(
+        &self,
+        req: PauseScheduleRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        self.scheduler
+            .pause_schedule(&req.id)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(UnpauseScheduleRequest)]
+    async fn on_unpause_schedule(
+        &self,
+        req: UnpauseScheduleRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        self.scheduler
+            .unpause_schedule(&req.id)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(KillJobRequest)]
+    async fn on_kill_job(
+        &self,
+        req: KillJobRequest,
+    ) -> Result<KillJobResponse, sacp::Error> {
+        self.scheduler
+            .kill_running_job(&req.id)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(KillJobResponse {
+            message: format!("Job '{}' killed", req.id),
+        })
+    }
+
+    #[custom_method(InspectJobRequest)]
+    async fn on_inspect_job(
+        &self,
+        req: InspectJobRequest,
+    ) -> Result<InspectJobResponse, sacp::Error> {
+        let info = self
+            .scheduler
+            .get_running_job_info(&req.id)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        match info {
+            Some((session_id, start_time)) => {
+                let duration = (chrono::Utc::now() - start_time).num_seconds();
+                Ok(InspectJobResponse {
+                    session_id: Some(session_id),
+                    process_start_time: Some(start_time.to_rfc3339()),
+                    running_duration_seconds: Some(duration),
+                })
+            }
+            None => Ok(InspectJobResponse {
+                session_id: None,
+                process_start_time: None,
+                running_duration_seconds: None,
+            }),
+        }
+    }
+
+    #[custom_method(ScheduleSessionsRequest)]
+    async fn on_schedule_sessions(
+        &self,
+        req: ScheduleSessionsRequest,
+    ) -> Result<ScheduleSessionsResponse, sacp::Error> {
+        let sessions = self
+            .scheduler
+            .sessions(&req.id, req.limit)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let sessions_json = sessions
+            .into_iter()
+            .map(|(id, session)| {
+                let mut v = serde_json::to_value(&session).unwrap_or_default();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("id".to_string(), serde_json::Value::String(id));
+                }
+                v
+            })
+            .collect();
+        Ok(ScheduleSessionsResponse {
+            sessions: sessions_json,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Recipes
+    // -----------------------------------------------------------------------
+
+    #[custom_method(CreateRecipeRequest)]
+    async fn on_create_recipe(
+        &self,
+        req: CreateRecipeRequest,
+    ) -> Result<CreateRecipeResponse, sacp::Error> {
+        let internal_id = self.internal_session_id(&req.session_id).await?;
+        let session = self
+            .session_manager
+            .get_session(&internal_id, true)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let agent = self.get_session_agent(&req.session_id, None).await?;
+        let conversation = session
+            .conversation
+            .as_ref()
+            .ok_or_else(|| sacp::Error::internal_error().data("session has no conversation"))?;
+        match agent.create_recipe(&session.id, conversation.clone()).await {
+            Ok(mut recipe) => {
+                if let Some(author_val) = req.author {
+                    if let Ok(author) =
+                        serde_json::from_value::<goose::recipe::Author>(author_val)
+                    {
+                        recipe.author = Some(author);
+                    }
+                }
+                let v = serde_json::to_value(&recipe)
+                    .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+                Ok(CreateRecipeResponse {
+                    recipe: Some(v),
+                    error: None,
+                })
+            }
+            Err(e) => Ok(CreateRecipeResponse {
+                recipe: None,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    #[custom_method(EncodeRecipeRequest)]
+    async fn on_encode_recipe(
+        &self,
+        req: EncodeRecipeRequest,
+    ) -> Result<EncodeRecipeResponse, sacp::Error> {
+        let recipe: goose::recipe::Recipe = serde_json::from_value(req.recipe)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad recipe: {e}")))?;
+        let deeplink = goose::recipe_deeplink::encode(&recipe)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EncodeRecipeResponse { deeplink })
+    }
+
+    #[custom_method(DecodeRecipeRequest)]
+    async fn on_decode_recipe(
+        &self,
+        req: DecodeRecipeRequest,
+    ) -> Result<DecodeRecipeResponse, sacp::Error> {
+        let recipe = goose::recipe_deeplink::decode(&req.deeplink)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad deeplink: {e}")))?;
+        // Validate by round-tripping through YAML
+        let yaml = recipe
+            .to_yaml()
+            .map_err(|e| sacp::Error::invalid_params().data(e.to_string()))?;
+        let _ = goose::recipe::validate_recipe::validate_recipe_template_from_content(&yaml, None)
+            .map_err(|e| sacp::Error::invalid_params().data(e.to_string()))?;
+        let v = serde_json::to_value(&recipe)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(DecodeRecipeResponse { recipe: v })
+    }
+
+    #[custom_method(ScanRecipeRequest)]
+    async fn on_scan_recipe(
+        &self,
+        req: ScanRecipeRequest,
+    ) -> Result<ScanRecipeResponse, sacp::Error> {
+        let recipe: goose::recipe::Recipe = serde_json::from_value(req.recipe)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad recipe: {e}")))?;
+        let has_warnings = recipe.check_for_security_warnings();
+        Ok(ScanRecipeResponse {
+            has_security_warnings: has_warnings,
+        })
+    }
+
+    #[custom_method(ListRecipesRequest)]
+    async fn on_list_recipes(
+        &self,
+        _req: ListRecipesRequest,
+    ) -> Result<ListRecipesResponse, sacp::Error> {
+        let local = goose::recipe::local_recipes::list_local_recipes()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let recipes = local
+            .into_iter()
+            .map(|(path, recipe)| {
+                let mut v = serde_json::to_value(&recipe).unwrap_or_default();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "file_path".to_string(),
+                        serde_json::Value::String(path.display().to_string()),
+                    );
+                }
+                v
+            })
+            .collect();
+        Ok(ListRecipesResponse { recipes })
+    }
+
+    #[custom_method(DeleteRecipeRequest)]
+    async fn on_delete_recipe(
+        &self,
+        req: DeleteRecipeRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let path = self.find_recipe_path(&req.id)?;
+        std::fs::remove_file(&path)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(ScheduleRecipeRequest)]
+    async fn on_schedule_recipe(
+        &self,
+        req: ScheduleRecipeRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let path = self.find_recipe_path(&req.id)?;
+        self.scheduler
+            .schedule_recipe(path, req.cron_schedule)
+            .await
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(SetRecipeSlashCommandRequest)]
+    async fn on_set_recipe_slash_command(
+        &self,
+        req: SetRecipeSlashCommandRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        let path = self.find_recipe_path(&req.id)?;
+        goose::slash_commands::set_recipe_slash_command(path, req.slash_command)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(EmptyResponse {})
+    }
+
+    #[custom_method(SaveRecipeRequest)]
+    async fn on_save_recipe(
+        &self,
+        req: SaveRecipeRequest,
+    ) -> Result<SaveRecipeResponse, sacp::Error> {
+        let recipe: goose::recipe::Recipe = serde_json::from_value(req.recipe)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad recipe: {e}")))?;
+
+        let existing_path = req.id.as_deref().and_then(|id| self.find_recipe_path(id).ok());
+
+        let saved_path =
+            goose::recipe::local_recipes::save_recipe_to_file(recipe, existing_path)
+                .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        let file_name = saved_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let file_path = saved_path.display().to_string();
+        // Use filename stem as ID
+        let id = saved_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(SaveRecipeResponse {
+            id,
+            file_name,
+            file_path,
+        })
+    }
+
+    #[custom_method(ParseRecipeRequest)]
+    async fn on_parse_recipe(
+        &self,
+        req: ParseRecipeRequest,
+    ) -> Result<ParseRecipeResponse, sacp::Error> {
+        let recipe =
+            goose::recipe::validate_recipe::validate_recipe_template_from_content(&req.content, None)
+                .map_err(|e| sacp::Error::invalid_params().data(e.to_string()))?;
+        let v = serde_json::to_value(&recipe)
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(ParseRecipeResponse { recipe: v })
+    }
+
+    #[custom_method(RecipeToYamlRequest)]
+    async fn on_recipe_to_yaml(
+        &self,
+        req: RecipeToYamlRequest,
+    ) -> Result<RecipeToYamlResponse, sacp::Error> {
+        let recipe: goose::recipe::Recipe = serde_json::from_value(req.recipe)
+            .map_err(|e| sacp::Error::invalid_params().data(format!("bad recipe: {e}")))?;
+        let yaml = recipe
+            .to_yaml()
+            .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(RecipeToYamlResponse { yaml })
+    }
+
+    // -----------------------------------------------------------------------
+    // Telemetry
+    // -----------------------------------------------------------------------
+
+    #[custom_method(SendTelemetryRequest)]
+    async fn on_send_telemetry(
+        &self,
+        req: SendTelemetryRequest,
+    ) -> Result<EmptyResponse, sacp::Error> {
+        // Telemetry is fire-and-forget; the posthog module is behind a feature flag
+        // so we just log the event name here.
+        debug!(
+            event_name = %req.event_name,
+            "telemetry event received via ACP"
+        );
+        let _ = req;
+        Ok(EmptyResponse {})
+    }
+
+    // -----------------------------------------------------------------------
+    // Dictation
+    // -----------------------------------------------------------------------
+
+    #[custom_method(TranscribeRequest)]
+    async fn on_transcribe(
+        &self,
+        req: TranscribeRequest,
+    ) -> Result<TranscribeResponse, sacp::Error> {
+        use goose::dictation::providers::{transcribe_with_provider, DictationProvider};
+
+        let audio_bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &req.audio,
+        )
+        .map_err(|e| sacp::Error::invalid_params().data(format!("invalid base64 audio: {e}")))?;
+
+        let extension = match req.mime_type.as_str() {
+            "audio/wav" | "audio/wave" => "wav",
+            "audio/mpeg" | "audio/mp3" => "mp3",
+            "audio/webm" => "webm",
+            "audio/ogg" => "ogg",
+            "audio/mp4" | "audio/m4a" => "m4a",
+            _ => "wav",
+        };
+
+        let provider: DictationProvider =
+            serde_json::from_value(serde_json::Value::String(req.provider.clone())).map_err(
+                |e| {
+                    sacp::Error::invalid_params()
+                        .data(format!("invalid provider '{}': {e}", req.provider))
+                },
+            )?;
+
+        let (model_param, model_value) = match provider {
+            DictationProvider::OpenAI => ("model".to_string(), "whisper-1".to_string()),
+            DictationProvider::Groq => {
+                ("model".to_string(), "whisper-large-v3-turbo".to_string())
+            }
+            DictationProvider::ElevenLabs => ("model_id".to_string(), "scribe_v1".to_string()),
+            #[cfg(feature = "local-inference")]
+            DictationProvider::Local => {
+                let text = goose::dictation::providers::transcribe_local(audio_bytes)
+                    .await
+                    .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+                return Ok(TranscribeResponse { text });
+            }
+        };
+
+        let text = transcribe_with_provider(
+            provider,
+            model_param,
+            model_value,
+            audio_bytes,
+            extension,
+            &req.mime_type,
+        )
+        .await
+        .map_err(|e| sacp::Error::internal_error().data(e.to_string()))?;
+        Ok(TranscribeResponse { text })
+    }
+
+    #[custom_method(GetDictationConfigRequest)]
+    async fn on_get_dictation_config(
+        &self,
+        _req: GetDictationConfigRequest,
+    ) -> Result<GetDictationConfigResponse, sacp::Error> {
+        use goose::dictation::providers::{all_providers, is_configured};
+
+        let config = goose::config::Config::global();
+        let mut providers = HashMap::new();
+        for def in all_providers() {
+            let configured = is_configured(def.provider);
+            let host = def.host_key.and_then(|host_key| {
+                config
+                    .get(host_key, false)
+                    .ok()
+                    .and_then(|v: serde_json::Value| v.as_str().map(|s| s.to_string()))
+            });
+            let mut info = serde_json::Map::new();
+            info.insert("configured".to_string(), serde_json::Value::Bool(configured));
+            info.insert(
+                "description".to_string(),
+                serde_json::Value::String(def.description.to_string()),
+            );
+            info.insert(
+                "uses_provider_config".to_string(),
+                serde_json::Value::Bool(def.uses_provider_config),
+            );
+            if let Some(h) = host {
+                info.insert("host".to_string(), serde_json::Value::String(h));
+            }
+            if let Some(sp) = def.settings_path {
+                info.insert(
+                    "settings_path".to_string(),
+                    serde_json::Value::String(sp.to_string()),
+                );
+            }
+            if !def.uses_provider_config {
+                info.insert(
+                    "config_key".to_string(),
+                    serde_json::Value::String(def.config_key.to_string()),
+                );
+            }
+            providers.insert(
+                format!("{:?}", def.provider),
+                serde_json::Value::Object(info),
+            );
+        }
+        Ok(GetDictationConfigResponse { providers })
+    }
+
+    // -----------------------------------------------------------------------
+    // Features
+    // -----------------------------------------------------------------------
+
+    #[custom_method(GetFeaturesRequest)]
+    async fn on_get_features(
+        &self,
+        _req: GetFeaturesRequest,
+    ) -> Result<GetFeaturesResponse, sacp::Error> {
+        let mut features = HashMap::new();
+        features.insert(
+            "local-inference".to_string(),
+            cfg!(feature = "local-inference"),
+        );
+        features.insert("code-mode".to_string(), cfg!(feature = "code-mode"));
+        Ok(GetFeaturesResponse { features })
     }
 }
 
