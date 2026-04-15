@@ -108,6 +108,8 @@ pub fn run() {
             commands::system::inspect_attachment_paths,
             commands::system::list_files_for_mentions,
             commands::system::read_image_attachment,
+            commands::dictation::get_dictation_config,
+            commands::dictation::transcribe_dictation,
         ])
         .setup(|_app| Ok(()))
         .build(tauri::generate_context!())

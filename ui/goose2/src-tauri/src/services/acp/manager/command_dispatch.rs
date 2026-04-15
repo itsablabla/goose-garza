@@ -253,6 +253,17 @@ pub(super) async fn dispatch_commands(
                     let _ = response.send(result);
                 });
             }
+            ManagerCommand::CallExt {
+                method,
+                params,
+                response,
+            } => {
+                let connection = Arc::clone(&connection);
+                tokio::task::spawn_local(async move {
+                    let result = call_ext_method(&connection, &method, params).await;
+                    let _ = response.send(result);
+                });
+            }
         }
     }
 }

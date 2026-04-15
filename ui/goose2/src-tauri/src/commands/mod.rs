@@ -2,6 +2,7 @@ pub mod acp;
 pub mod agent_setup;
 pub mod agents;
 pub mod credentials;
+pub mod dictation;
 pub mod doctor;
 pub mod extensions;
 pub mod git;

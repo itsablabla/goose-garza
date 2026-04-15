@@ -67,6 +67,11 @@ enum ManagerCommand {
         model_id: String,
         response: oneshot::Sender<Result<(), String>>,
     },
+    CallExt {
+        method: String,
+        params: serde_json::Value,
+        response: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 pub struct GooseAcpManager {
@@ -282,6 +287,26 @@ impl GooseAcpManager {
             .await
             .map_err(|_| "Goose ACP manager dropped fork session request".to_string())?
     }
+
+    /// Call an arbitrary ext_method on the goose binary via ACP.
+    pub async fn call_ext(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<String, String> {
+        let method = method.to_string();
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ManagerCommand::CallExt {
+                method: method.clone(),
+                params,
+                response: response_tx,
+            })
+            .map_err(|_| "Goose ACP manager is unavailable".to_string())?;
+        response_rx
+            .await
+            .map_err(|_| format!("Goose ACP manager dropped {method} request"))?
+    }
 }
 
 /// Call a goose ext_method and return the raw JSON response string.
@@ -290,6 +315,7 @@ async fn call_ext_method(
     method: &str,
     params_json: serde_json::Value,
 ) -> Result<String, String> {
+    let method = normalize_ext_method_name(method);
     let params = RawValue::from_string(params_json.to_string())
         .map_err(|e| format!("Failed to build {method} request: {e}"))?;
     let resp = connection
@@ -299,10 +325,35 @@ async fn call_ext_method(
     Ok(resp.0.get().to_string())
 }
 
+fn normalize_ext_method_name(method: &str) -> &str {
+    method.trim_start_matches('_')
+}
+
 fn run_manager_thread(
     app_handle: tauri::AppHandle,
     command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
     ready_tx: oneshot::Sender<Result<(), String>>,
 ) {
     thread::run_manager_thread(app_handle, command_rx, ready_tx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_ext_method_name;
+
+    #[test]
+    fn normalize_ext_method_name_strips_wire_prefix() {
+        assert_eq!(
+            normalize_ext_method_name("_goose/dictation/config"),
+            "goose/dictation/config"
+        );
+        assert_eq!(
+            normalize_ext_method_name("goose/dictation/config"),
+            "goose/dictation/config"
+        );
+        assert_eq!(
+            normalize_ext_method_name("__goose/dictation/config"),
+            "goose/dictation/config"
+        );
+    }
 }
