@@ -10,6 +10,8 @@ export interface ExtMethodProvider {
 import type {
   AddExtensionRequest,
   ArchiveSessionRequest,
+  CallToolRequest,
+  CallToolResponse,
   CheckSecretRequest,
   CheckSecretResponse,
   DeleteSessionRequest,
@@ -27,8 +29,14 @@ import type {
   GetToolsResponse,
   ImportSessionRequest,
   ImportSessionResponse,
+  ListPromptsRequest,
+  ListPromptsResponse,
   ListProvidersRequest,
   ListProvidersResponse,
+  ListResourceTemplatesRequest,
+  ListResourceTemplatesResponse,
+  ListResourcesRequest,
+  ListResourcesResponse,
   ReadConfigRequest,
   ReadConfigResponse,
   ReadResourceRequest,
@@ -44,6 +52,7 @@ import type {
   UpsertSecretRequest,
 } from './types.gen.js';
 import {
+  zCallToolResponse,
   zCheckSecretResponse,
   zExportSessionResponse,
   zGetExtensionsResponse,
@@ -52,7 +61,10 @@ import {
   zGetSessionExtensionsResponse,
   zGetToolsResponse,
   zImportSessionResponse,
+  zListPromptsResponse,
   zListProvidersResponse,
+  zListResourceTemplatesResponse,
+  zListResourcesResponse,
   zReadConfigResponse,
   zReadResourceResponse,
   zUpdateProviderResponse,
@@ -74,11 +86,42 @@ export class GooseExtClient {
     return zGetToolsResponse.parse(raw) as GetToolsResponse;
   }
 
+  async GooseToolsCall(params: CallToolRequest): Promise<CallToolResponse> {
+    const raw = await this.conn.extMethod("_goose/tools/call", params);
+    return zCallToolResponse.parse(raw) as CallToolResponse;
+  }
+
+  async GooseResourcesList(
+    params: ListResourcesRequest,
+  ): Promise<ListResourcesResponse> {
+    const raw = await this.conn.extMethod("_goose/resources/list", params);
+    return zListResourcesResponse.parse(raw) as ListResourcesResponse;
+  }
+
+  async GooseResourcesTemplatesList(
+    params: ListResourceTemplatesRequest,
+  ): Promise<ListResourceTemplatesResponse> {
+    const raw = await this.conn.extMethod(
+      "_goose/resources/templates/list",
+      params,
+    );
+    return zListResourceTemplatesResponse.parse(
+      raw,
+    ) as ListResourceTemplatesResponse;
+  }
+
   async GooseResourceRead(
     params: ReadResourceRequest,
   ): Promise<ReadResourceResponse> {
     const raw = await this.conn.extMethod("_goose/resource/read", params);
     return zReadResourceResponse.parse(raw) as ReadResourceResponse;
+  }
+
+  async GoosePromptsList(
+    params: ListPromptsRequest,
+  ): Promise<ListPromptsResponse> {
+    const raw = await this.conn.extMethod("_goose/prompts/list", params);
+    return zListPromptsResponse.parse(raw) as ListPromptsResponse;
   }
 
   async GooseWorkingDirUpdate(params: UpdateWorkingDirRequest): Promise<void> {
