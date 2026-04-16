@@ -303,7 +303,13 @@ async fn run_knowledge_extraction(
         }
 
         let result = provider
-            .complete(&model_config, session_id, system_prompt, &messages, &review_tools)
+            .complete(
+                &model_config,
+                session_id,
+                system_prompt,
+                &messages,
+                &review_tools,
+            )
             .await;
 
         let (response_message, _usage) = match result {
