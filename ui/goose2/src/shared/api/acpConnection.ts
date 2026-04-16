@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { GooseClient } from "@aaif/goose-acp";
+import { GooseClient } from "../../../../sdk/src/index.ts";
 import {
   PROTOCOL_VERSION,
   type Client,

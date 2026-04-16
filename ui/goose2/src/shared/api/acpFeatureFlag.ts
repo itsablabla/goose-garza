@@ -1,1 +1,1 @@
-export const USE_DIRECT_ACP = true;
+export const USE_DIRECT_ACP = false;
