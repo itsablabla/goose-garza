@@ -31,24 +31,28 @@ pub const DEFAULT_SKILL_REVIEW_ITERATIONS: u32 = 10;
 /// Maximum tool calls the review agent can make per review.
 const MAX_REVIEW_TOOL_CALLS: usize = 8;
 
-const MEMORY_REVIEW_PROMPT: &str = r#"Review the conversation above and extract any durable facts worth saving to persistent memory. Focus on:
+const MEMORY_REVIEW_PROMPT: &str = r#"Review the conversation above and extract any durable facts worth saving to persistent memory.
 
-1. User identity/preferences: name, role, timezone, coding style, communication preferences, pet peeves
-   → Save these with target "user"
+TARGET "user" — who the user is (survives across all future sessions):
+- Name, role, timezone, team, company
+- Coding style preferences (languages, frameworks, conventions)
+- Communication preferences (concise vs detailed, format preferences)
+- Pet peeves and corrections ("don't do X", "always use Y")
+- Personal details they've shared voluntarily
 
-2. Environment/project facts: OS, installed tools, project structure, build commands, API quirks, tool behaviors
-   → Save these with target "memory"
-
-3. Corrections: if the user corrected the agent's approach, save the correct approach
-
-4. Lessons learned: non-obvious things discovered through trial and error
-   → Save with target "memory"
+TARGET "memory" — your notes about the environment (things you'd need to rediscover otherwise):
+- OS, shell, installed tools, package managers
+- Project structure, build commands, test commands
+- API quirks, tool behaviors, workarounds discovered
+- Lessons learned through trial and error
 
 Rules:
-- Do NOT save task progress, session outcomes, or temporary state
-- Do NOT save things that are obvious or easily re-discovered
-- Keep entries concise — one fact per entry
-- If nothing is worth saving, just say so.
+- One fact per entry, keep them concise
+- User preferences and corrections are highest priority — they prevent repeating mistakes
+- Do NOT save: task progress, session outcomes, temporary state
+- Do NOT save things that are obvious or trivially re-discoverable
+- Do NOT duplicate — if a fact is already in memory, skip it
+- If nothing is worth saving, just say so and stop.
 
 Make your memory tool calls now."#;
 
@@ -62,9 +66,16 @@ If nothing is worth saving, just say "Nothing to save." and stop."#;
 
 const COMBINED_REVIEW_PROMPT: &str = r#"Review the conversation above and consider two things:
 
-**Memory**: Has the user revealed things about themselves — their persona, desires, preferences, or personal details? Has the user expressed expectations about how you should behave, their work style, or ways they want you to operate? If so, save using the memory tool.
+**Memory** — save durable facts using the memory tool:
+- Target "user": who the user is — name, role, preferences, coding style, pet peeves, corrections
+- Target "memory": environment facts — OS, tools, project structure, build commands, API quirks, lessons learned
+- Priority: user preferences and corrections > environment facts > procedural knowledge
+- One fact per entry, keep concise. Do NOT duplicate facts already in memory.
 
-**Skills**: Was a non-trivial approach used to complete a task that required trial and error, or changing course due to experiential findings along the way, or did the user expect or desire a different method or outcome? If a relevant skill already exists, update it. Otherwise, create a new one if the approach is reusable.
+**Skills** — save reusable approaches using create_skill or patch_skill:
+- Was a non-trivial approach used? (trial and error, error recovery, multi-step workflow)
+- Did the user correct or improve the approach? Save the corrected version.
+- If a relevant skill already exists, patch it. Otherwise create a new one.
 
 Only act if there's something genuinely worth saving.
 If nothing stands out, just say "Nothing to save." and stop."#;
@@ -271,10 +282,20 @@ async fn run_knowledge_extraction(
 
     let system_prompt =
         "You are reviewing a conversation to extract durable knowledge. \
-         You have access to memory and/or skill tools. Use them to save important facts \
-         or reusable approaches. Be selective — only save things that will matter in future sessions.";
+         You have access to memory and/or skill tools. Use them now.\n\n\
+         MEMORY — two targets:\n\
+         - 'user': who the user is — name, role, preferences, communication style, pet peeves, corrections\n\
+         - 'memory': your notes — environment facts, project conventions, tool quirks, lessons learned\n\
+         The most valuable memory prevents the user from having to repeat themselves.\n\
+         Priority: user preferences and corrections > environment facts > procedural knowledge.\n\n\
+         SKILLS — save when a non-trivial approach was used (trial and error, error recovery, multi-step).\n\
+         If nothing is genuinely worth saving, say so and stop.";
 
     let mut tool_calls_made = 0;
+
+    // Use the main model for reviews — the judgment about what's worth saving
+    // is nuanced and benefits from the same model quality as the main conversation.
+    let model_config = provider.get_model_config();
 
     loop {
         if tool_calls_made >= MAX_REVIEW_TOOL_CALLS {
@@ -282,7 +303,7 @@ async fn run_knowledge_extraction(
         }
 
         let result = provider
-            .complete_fast(session_id, system_prompt, &messages, &review_tools)
+            .complete(&model_config, session_id, system_prompt, &messages, &review_tools)
             .await;
 
         let (response_message, _usage) = match result {

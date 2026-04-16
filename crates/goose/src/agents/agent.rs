@@ -1829,6 +1829,9 @@ impl Agent {
                     self.turns_since_memory_review.store(0, std::sync::atomic::Ordering::Relaxed);
                 }
                 if let Ok(provider) = self.provider().await {
+                    // Always include memory when skill review fires — complex work
+                    // often surfaces environment facts worth remembering too.
+                    let review_memory = true;
                     super::knowledge_review::spawn_background_review(
                         provider,
                         Arc::clone(&self.extension_manager),
@@ -1836,7 +1839,7 @@ impl Agent {
                         conversation.clone(),
                         session_config.id.clone(),
                         working_dir.clone(),
-                        should_review_memory,
+                        review_memory,
                         should_review_skills,
                     );
                 }
