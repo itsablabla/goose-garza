@@ -830,6 +830,183 @@ export declare const zDictationConfigResponse: z.ZodObject<{
         }[] | undefined;
     }>;
 }>;
+/**
+ * List available local Whisper models with their download status.
+ */
+export declare const zDictationModelsListRequest: z.ZodRecord<z.ZodString, z.ZodUnknown>;
+export declare const zDictationLocalModelStatus: z.ZodObject<{
+    id: z.ZodString;
+    label: z.ZodString;
+    description: z.ZodString;
+    sizeMb: z.ZodNumber;
+    downloaded: z.ZodBoolean;
+    downloadInProgress: z.ZodBoolean;
+}, "strip", z.ZodTypeAny, {
+    id: string;
+    label: string;
+    description: string;
+    sizeMb: number;
+    downloaded: boolean;
+    downloadInProgress: boolean;
+}, {
+    id: string;
+    label: string;
+    description: string;
+    sizeMb: number;
+    downloaded: boolean;
+    downloadInProgress: boolean;
+}>;
+export declare const zDictationModelsListResponse: z.ZodObject<{
+    models: z.ZodArray<z.ZodObject<{
+        id: z.ZodString;
+        label: z.ZodString;
+        description: z.ZodString;
+        sizeMb: z.ZodNumber;
+        downloaded: z.ZodBoolean;
+        downloadInProgress: z.ZodBoolean;
+    }, "strip", z.ZodTypeAny, {
+        id: string;
+        label: string;
+        description: string;
+        sizeMb: number;
+        downloaded: boolean;
+        downloadInProgress: boolean;
+    }, {
+        id: string;
+        label: string;
+        description: string;
+        sizeMb: number;
+        downloaded: boolean;
+        downloadInProgress: boolean;
+    }>, "many">;
+}, "strip", z.ZodTypeAny, {
+    models: {
+        id: string;
+        label: string;
+        description: string;
+        sizeMb: number;
+        downloaded: boolean;
+        downloadInProgress: boolean;
+    }[];
+}, {
+    models: {
+        id: string;
+        label: string;
+        description: string;
+        sizeMb: number;
+        downloaded: boolean;
+        downloadInProgress: boolean;
+    }[];
+}>;
+/**
+ * Kick off a background download of a local Whisper model.
+ */
+export declare const zDictationModelDownloadRequest: z.ZodObject<{
+    modelId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    modelId: string;
+}, {
+    modelId: string;
+}>;
+/**
+ * Poll the progress of an in-flight download.
+ */
+export declare const zDictationModelDownloadProgressRequest: z.ZodObject<{
+    modelId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    modelId: string;
+}, {
+    modelId: string;
+}>;
+export declare const zDictationDownloadProgress: z.ZodObject<{
+    bytesDownloaded: z.ZodNumber;
+    totalBytes: z.ZodNumber;
+    progressPercent: z.ZodNumber;
+    status: z.ZodString;
+    error: z.ZodOptional<z.ZodUnion<[z.ZodString, z.ZodNull]>>;
+}, "strip", z.ZodTypeAny, {
+    status: string;
+    bytesDownloaded: number;
+    totalBytes: number;
+    progressPercent: number;
+    error?: string | null | undefined;
+}, {
+    status: string;
+    bytesDownloaded: number;
+    totalBytes: number;
+    progressPercent: number;
+    error?: string | null | undefined;
+}>;
+export declare const zDictationModelDownloadProgressResponse: z.ZodObject<{
+    progress: z.ZodOptional<z.ZodUnion<[z.ZodObject<{
+        bytesDownloaded: z.ZodNumber;
+        totalBytes: z.ZodNumber;
+        progressPercent: z.ZodNumber;
+        status: z.ZodString;
+        error: z.ZodOptional<z.ZodUnion<[z.ZodString, z.ZodNull]>>;
+    }, "strip", z.ZodTypeAny, {
+        status: string;
+        bytesDownloaded: number;
+        totalBytes: number;
+        progressPercent: number;
+        error?: string | null | undefined;
+    }, {
+        status: string;
+        bytesDownloaded: number;
+        totalBytes: number;
+        progressPercent: number;
+        error?: string | null | undefined;
+    }>, z.ZodNull]>>;
+}, "strip", z.ZodTypeAny, {
+    progress?: {
+        status: string;
+        bytesDownloaded: number;
+        totalBytes: number;
+        progressPercent: number;
+        error?: string | null | undefined;
+    } | null | undefined;
+}, {
+    progress?: {
+        status: string;
+        bytesDownloaded: number;
+        totalBytes: number;
+        progressPercent: number;
+        error?: string | null | undefined;
+    } | null | undefined;
+}>;
+/**
+ * Cancel an in-flight download.
+ */
+export declare const zDictationModelCancelRequest: z.ZodObject<{
+    modelId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    modelId: string;
+}, {
+    modelId: string;
+}>;
+/**
+ * Delete a downloaded local Whisper model from disk.
+ */
+export declare const zDictationModelDeleteRequest: z.ZodObject<{
+    modelId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    modelId: string;
+}, {
+    modelId: string;
+}>;
+/**
+ * Persist the user's model selection for a given provider.
+ */
+export declare const zDictationModelSelectRequest: z.ZodObject<{
+    provider: z.ZodString;
+    modelId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    provider: string;
+    modelId: string;
+}, {
+    provider: string;
+    modelId: string;
+}>;
 export declare const zExtRequest: z.ZodObject<{
     id: z.ZodString;
     method: z.ZodString;
@@ -992,7 +1169,40 @@ export declare const zExtRequest: z.ZodObject<{
         provider: string;
         audio: string;
         mimeType: string;
-    }>, z.ZodRecord<z.ZodString, z.ZodUnknown>]>, z.ZodUnion<[z.ZodRecord<z.ZodString, z.ZodUnknown>, z.ZodNull]>]>>;
+    }>, z.ZodRecord<z.ZodString, z.ZodUnknown>, z.ZodRecord<z.ZodString, z.ZodUnknown>, z.ZodObject<{
+        modelId: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        modelId: string;
+    }, {
+        modelId: string;
+    }>, z.ZodObject<{
+        modelId: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        modelId: string;
+    }, {
+        modelId: string;
+    }>, z.ZodObject<{
+        modelId: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        modelId: string;
+    }, {
+        modelId: string;
+    }>, z.ZodObject<{
+        modelId: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        modelId: string;
+    }, {
+        modelId: string;
+    }>, z.ZodObject<{
+        provider: z.ZodString;
+        modelId: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        provider: string;
+        modelId: string;
+    }, {
+        provider: string;
+        modelId: string;
+    }>]>, z.ZodUnion<[z.ZodRecord<z.ZodString, z.ZodUnknown>, z.ZodNull]>]>>;
 }, "strip", z.ZodTypeAny, {
     id: string;
     method: string;
@@ -1049,6 +1259,17 @@ export declare const zExtRequest: z.ZodObject<{
         provider: string;
         audio: string;
         mimeType: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        provider: string;
+        modelId: string;
     } | null | undefined;
 }, {
     id: string;
@@ -1106,6 +1327,17 @@ export declare const zExtRequest: z.ZodObject<{
         provider: string;
         audio: string;
         mimeType: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        modelId: string;
+    } | {
+        provider: string;
+        modelId: string;
     } | null | undefined;
 }>;
 export declare const zExtResponse: z.ZodUnion<[z.ZodObject<{
@@ -1431,6 +1663,83 @@ export declare const zExtResponse: z.ZodUnion<[z.ZodObject<{
                 description: string;
             }[] | undefined;
         }>;
+    }>, z.ZodObject<{
+        models: z.ZodArray<z.ZodObject<{
+            id: z.ZodString;
+            label: z.ZodString;
+            description: z.ZodString;
+            sizeMb: z.ZodNumber;
+            downloaded: z.ZodBoolean;
+            downloadInProgress: z.ZodBoolean;
+        }, "strip", z.ZodTypeAny, {
+            id: string;
+            label: string;
+            description: string;
+            sizeMb: number;
+            downloaded: boolean;
+            downloadInProgress: boolean;
+        }, {
+            id: string;
+            label: string;
+            description: string;
+            sizeMb: number;
+            downloaded: boolean;
+            downloadInProgress: boolean;
+        }>, "many">;
+    }, "strip", z.ZodTypeAny, {
+        models: {
+            id: string;
+            label: string;
+            description: string;
+            sizeMb: number;
+            downloaded: boolean;
+            downloadInProgress: boolean;
+        }[];
+    }, {
+        models: {
+            id: string;
+            label: string;
+            description: string;
+            sizeMb: number;
+            downloaded: boolean;
+            downloadInProgress: boolean;
+        }[];
+    }>, z.ZodObject<{
+        progress: z.ZodOptional<z.ZodUnion<[z.ZodObject<{
+            bytesDownloaded: z.ZodNumber;
+            totalBytes: z.ZodNumber;
+            progressPercent: z.ZodNumber;
+            status: z.ZodString;
+            error: z.ZodOptional<z.ZodUnion<[z.ZodString, z.ZodNull]>>;
+        }, "strip", z.ZodTypeAny, {
+            status: string;
+            bytesDownloaded: number;
+            totalBytes: number;
+            progressPercent: number;
+            error?: string | null | undefined;
+        }, {
+            status: string;
+            bytesDownloaded: number;
+            totalBytes: number;
+            progressPercent: number;
+            error?: string | null | undefined;
+        }>, z.ZodNull]>>;
+    }, "strip", z.ZodTypeAny, {
+        progress?: {
+            status: string;
+            bytesDownloaded: number;
+            totalBytes: number;
+            progressPercent: number;
+            error?: string | null | undefined;
+        } | null | undefined;
+    }, {
+        progress?: {
+            status: string;
+            bytesDownloaded: number;
+            totalBytes: number;
+            progressPercent: number;
+            error?: string | null | undefined;
+        } | null | undefined;
     }>]>, z.ZodUnknown]>>;
 }, "strip", z.ZodTypeAny, {
     id: string;

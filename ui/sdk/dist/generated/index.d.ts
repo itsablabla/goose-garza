@@ -1,4 +1,4 @@
-export type { AddExtensionRequest, ArchiveSessionRequest, CheckSecretRequest, CheckSecretResponse, DeleteSessionRequest, DictationConfigRequest, DictationConfigResponse, DictationModelOption, DictationProviderStatusEntry, DictationTranscribeRequest, DictationTranscribeResponse, EmptyResponse, ExportSessionRequest, ExportSessionResponse, ExtRequest, ExtResponse, GetExtensionsRequest, GetExtensionsResponse, GetProviderDetailsRequest, GetProviderDetailsResponse, GetProviderModelsRequest, GetProviderModelsResponse, GetSessionExtensionsRequest, GetSessionExtensionsResponse, GetToolsRequest, GetToolsResponse, ImportSessionRequest, ImportSessionResponse, ListProvidersRequest, ListProvidersResponse, ModelEntry, ProviderConfigKey, ProviderDetailEntry, ProviderListEntry, ReadConfigRequest, ReadConfigResponse, ReadResourceRequest, ReadResourceResponse, RemoveConfigRequest, RemoveExtensionRequest, RemoveSecretRequest, UnarchiveSessionRequest, UpdateProviderRequest, UpdateProviderResponse, UpdateWorkingDirRequest, UpsertConfigRequest, UpsertSecretRequest } from './types.gen.js';
+export type { AddExtensionRequest, ArchiveSessionRequest, CheckSecretRequest, CheckSecretResponse, DeleteSessionRequest, DictationConfigRequest, DictationConfigResponse, DictationDownloadProgress, DictationLocalModelStatus, DictationModelCancelRequest, DictationModelDeleteRequest, DictationModelDownloadProgressRequest, DictationModelDownloadProgressResponse, DictationModelDownloadRequest, DictationModelOption, DictationModelSelectRequest, DictationModelsListRequest, DictationModelsListResponse, DictationProviderStatusEntry, DictationTranscribeRequest, DictationTranscribeResponse, EmptyResponse, ExportSessionRequest, ExportSessionResponse, ExtRequest, ExtResponse, GetExtensionsRequest, GetExtensionsResponse, GetProviderDetailsRequest, GetProviderDetailsResponse, GetProviderModelsRequest, GetProviderModelsResponse, GetSessionExtensionsRequest, GetSessionExtensionsResponse, GetToolsRequest, GetToolsResponse, ImportSessionRequest, ImportSessionResponse, ListProvidersRequest, ListProvidersResponse, ModelEntry, ProviderConfigKey, ProviderDetailEntry, ProviderListEntry, ReadConfigRequest, ReadConfigResponse, ReadResourceRequest, ReadResourceResponse, RemoveConfigRequest, RemoveExtensionRequest, RemoveSecretRequest, UnarchiveSessionRequest, UpdateProviderRequest, UpdateProviderResponse, UpdateWorkingDirRequest, UpsertConfigRequest, UpsertSecretRequest } from './types.gen.js';
 export declare const GOOSE_EXT_METHODS: readonly [{
     readonly method: "_goose/extensions/add";
     readonly requestType: "AddExtensionRequest";
@@ -95,6 +95,30 @@ export declare const GOOSE_EXT_METHODS: readonly [{
     readonly method: "_goose/dictation/config";
     readonly requestType: "DictationConfigRequest";
     readonly responseType: "DictationConfigResponse";
+}, {
+    readonly method: "_goose/dictation/models/list";
+    readonly requestType: "DictationModelsListRequest";
+    readonly responseType: "DictationModelsListResponse";
+}, {
+    readonly method: "_goose/dictation/models/download";
+    readonly requestType: "DictationModelDownloadRequest";
+    readonly responseType: "EmptyResponse";
+}, {
+    readonly method: "_goose/dictation/models/download/progress";
+    readonly requestType: "DictationModelDownloadProgressRequest";
+    readonly responseType: "DictationModelDownloadProgressResponse";
+}, {
+    readonly method: "_goose/dictation/models/cancel";
+    readonly requestType: "DictationModelCancelRequest";
+    readonly responseType: "EmptyResponse";
+}, {
+    readonly method: "_goose/dictation/models/delete";
+    readonly requestType: "DictationModelDeleteRequest";
+    readonly responseType: "EmptyResponse";
+}, {
+    readonly method: "_goose/dictation/model/select";
+    readonly requestType: "DictationModelSelectRequest";
+    readonly responseType: "EmptyResponse";
 }];
 export type GooseExtMethod = (typeof GOOSE_EXT_METHODS)[number];
 //# sourceMappingURL=index.d.ts.map

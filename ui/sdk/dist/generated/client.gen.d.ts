@@ -1,7 +1,7 @@
 export interface ExtMethodProvider {
     extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
-import type { AddExtensionRequest, ArchiveSessionRequest, CheckSecretRequest, CheckSecretResponse, DeleteSessionRequest, DictationConfigRequest, DictationConfigResponse, DictationTranscribeRequest, DictationTranscribeResponse, ExportSessionRequest, ExportSessionResponse, GetExtensionsRequest, GetExtensionsResponse, GetProviderDetailsRequest, GetProviderDetailsResponse, GetProviderModelsRequest, GetProviderModelsResponse, GetSessionExtensionsRequest, GetSessionExtensionsResponse, GetToolsRequest, GetToolsResponse, ImportSessionRequest, ImportSessionResponse, ListProvidersRequest, ListProvidersResponse, ReadConfigRequest, ReadConfigResponse, ReadResourceRequest, ReadResourceResponse, RemoveConfigRequest, RemoveExtensionRequest, RemoveSecretRequest, UnarchiveSessionRequest, UpdateProviderRequest, UpdateProviderResponse, UpdateWorkingDirRequest, UpsertConfigRequest, UpsertSecretRequest } from './types.gen.js';
+import type { AddExtensionRequest, ArchiveSessionRequest, CheckSecretRequest, CheckSecretResponse, DeleteSessionRequest, DictationConfigRequest, DictationConfigResponse, DictationModelCancelRequest, DictationModelDeleteRequest, DictationModelDownloadProgressRequest, DictationModelDownloadProgressResponse, DictationModelDownloadRequest, DictationModelSelectRequest, DictationModelsListRequest, DictationModelsListResponse, DictationTranscribeRequest, DictationTranscribeResponse, ExportSessionRequest, ExportSessionResponse, GetExtensionsRequest, GetExtensionsResponse, GetProviderDetailsRequest, GetProviderDetailsResponse, GetProviderModelsRequest, GetProviderModelsResponse, GetSessionExtensionsRequest, GetSessionExtensionsResponse, GetToolsRequest, GetToolsResponse, ImportSessionRequest, ImportSessionResponse, ListProvidersRequest, ListProvidersResponse, ReadConfigRequest, ReadConfigResponse, ReadResourceRequest, ReadResourceResponse, RemoveConfigRequest, RemoveExtensionRequest, RemoveSecretRequest, UnarchiveSessionRequest, UpdateProviderRequest, UpdateProviderResponse, UpdateWorkingDirRequest, UpsertConfigRequest, UpsertSecretRequest } from './types.gen.js';
 export declare class GooseExtClient {
     private conn;
     constructor(conn: ExtMethodProvider);
@@ -29,5 +29,11 @@ export declare class GooseExtClient {
     GooseSessionUnarchive(params: UnarchiveSessionRequest): Promise<void>;
     GooseDictationTranscribe(params: DictationTranscribeRequest): Promise<DictationTranscribeResponse>;
     GooseDictationConfig(params: DictationConfigRequest): Promise<DictationConfigResponse>;
+    GooseDictationModelsList(params: DictationModelsListRequest): Promise<DictationModelsListResponse>;
+    GooseDictationModelsDownload(params: DictationModelDownloadRequest): Promise<void>;
+    GooseDictationModelsDownloadProgress(params: DictationModelDownloadProgressRequest): Promise<DictationModelDownloadProgressResponse>;
+    GooseDictationModelsCancel(params: DictationModelCancelRequest): Promise<void>;
+    GooseDictationModelsDelete(params: DictationModelDeleteRequest): Promise<void>;
+    GooseDictationModelSelect(params: DictationModelSelectRequest): Promise<void>;
 }
 //# sourceMappingURL=client.gen.d.ts.map

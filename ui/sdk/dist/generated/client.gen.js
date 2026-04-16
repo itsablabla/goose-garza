@@ -1,5 +1,5 @@
 // This file is auto-generated — do not edit manually.
-import { zCheckSecretResponse, zDictationConfigResponse, zDictationTranscribeResponse, zExportSessionResponse, zGetExtensionsResponse, zGetProviderDetailsResponse, zGetProviderModelsResponse, zGetSessionExtensionsResponse, zGetToolsResponse, zImportSessionResponse, zListProvidersResponse, zReadConfigResponse, zReadResourceResponse, zUpdateProviderResponse, } from './zod.gen.js';
+import { zCheckSecretResponse, zDictationConfigResponse, zDictationModelDownloadProgressResponse, zDictationModelsListResponse, zDictationTranscribeResponse, zExportSessionResponse, zGetExtensionsResponse, zGetProviderDetailsResponse, zGetProviderModelsResponse, zGetSessionExtensionsResponse, zGetToolsResponse, zImportSessionResponse, zListProvidersResponse, zReadConfigResponse, zReadResourceResponse, zUpdateProviderResponse, } from './zod.gen.js';
 export class GooseExtClient {
     conn;
     constructor(conn) {
@@ -90,5 +90,25 @@ export class GooseExtClient {
     async GooseDictationConfig(params) {
         const raw = await this.conn.extMethod("_goose/dictation/config", params);
         return zDictationConfigResponse.parse(raw);
+    }
+    async GooseDictationModelsList(params) {
+        const raw = await this.conn.extMethod("_goose/dictation/models/list", params);
+        return zDictationModelsListResponse.parse(raw);
+    }
+    async GooseDictationModelsDownload(params) {
+        await this.conn.extMethod("_goose/dictation/models/download", params);
+    }
+    async GooseDictationModelsDownloadProgress(params) {
+        const raw = await this.conn.extMethod("_goose/dictation/models/download/progress", params);
+        return zDictationModelDownloadProgressResponse.parse(raw);
+    }
+    async GooseDictationModelsCancel(params) {
+        await this.conn.extMethod("_goose/dictation/models/cancel", params);
+    }
+    async GooseDictationModelsDelete(params) {
+        await this.conn.extMethod("_goose/dictation/models/delete", params);
+    }
+    async GooseDictationModelSelect(params) {
+        await this.conn.extMethod("_goose/dictation/model/select", params);
     }
 }
