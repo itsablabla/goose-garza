@@ -1,5 +1,3 @@
-import '../../Justfile'
-
 # Derive a stable port from the working directory so the same worktree
 # always gets the same port.
 vite_port := `python3 -c "import hashlib,os; h=int(hashlib.sha256(os.getcwd().encode()).hexdigest(),16); print(10000 + h % 55000)"`
@@ -76,7 +74,7 @@ test-e2e-all:
 # ── Run ──────────────────────────────────────────────────────
 
 # Start the desktop app in dev mode
-dev: build-debug
+dev: build-core
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -110,7 +108,7 @@ dev: build-debug
     pnpm tauri dev --features app-test-driver --config "$TAURI_CONFIG"
 
 # Start the desktop app with dev config
-dev-debug: build-debug
+dev-debug: build-core
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -180,3 +178,6 @@ clean:
 cherry-pick-goose2 *ARGS:
     git fetch goose2
     git format-patch -1 {{ARGS}} --stdout | git am --directory=ui/goose2
+
+build-core:
+    cargo build -p goose-cli --bin goose
