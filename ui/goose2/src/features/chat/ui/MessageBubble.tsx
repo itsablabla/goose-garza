@@ -379,7 +379,7 @@ export const MessageBubble = memo(function MessageBubble({
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.nativeEvent.isComposing) {
         e.preventDefault();
         onCancelEdit?.();
       } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
