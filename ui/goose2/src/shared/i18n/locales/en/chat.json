@@ -152,7 +152,7 @@
     "attachFolder": "Folder",
     "chooseAgentModel": "Choose agent and model",
     "chooseProject": "Choose a project",
-    "compactNow": "Compact now",
+    "compactNow": "Compact",
     "compacting": "Compacting...",
     "chooseProvider": "Choose a provider",
     "contextTokensBreakdown": "{{tokens}} / {{limit}} tokens used",

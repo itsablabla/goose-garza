@@ -152,7 +152,7 @@
     "attachFolder": "Carpeta",
     "chooseAgentModel": "Elegir agente y modelo",
     "chooseProject": "Elegir un proyecto",
-    "compactNow": "Compactar ahora",
+    "compactNow": "Compactar",
     "compacting": "Compactando...",
     "chooseProvider": "Elegir un proveedor",
     "contextTokensBreakdown": "{{tokens}} / {{limit}} tokens usados",

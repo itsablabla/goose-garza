@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { AgentModelPicker } from "./AgentModelPicker";
 import type { ModelOption } from "../types";
@@ -173,11 +174,6 @@ export function ChatInputToolbar({
     minimumFractionDigits: contextPercentDigits,
     maximumFractionDigits: contextPercentDigits,
   });
-  const leftPercentLabel = formatNumber(Math.max(1 - contextProgress, 0), {
-    style: "percent",
-    minimumFractionDigits: contextPercentDigits,
-    maximumFractionDigits: contextPercentDigits,
-  });
   const formatCompactTokenCount = (value: number) =>
     formatNumber(value, {
       notation: "compact",
@@ -319,24 +315,23 @@ export function ChatInputToolbar({
                 <div className="px-2 py-1.5 text-sm font-semibold text-foreground">
                   {t("toolbar.contextWindow")}
                 </div>
-                <div className="space-y-1 px-2 pb-1.5">
-                  <div className="text-sm text-foreground">
-                    {t("toolbar.contextUsageBreakdown", {
-                      used: usedPercentLabel,
-                      left: leftPercentLabel,
-                    })}
-                  </div>
-                  <div className="text-sm text-foreground">
-                    {t("toolbar.contextTokensBreakdown", {
-                      tokens: formatCompactTokenCount(contextTokens),
-                      limit: formatCompactTokenCount(contextLimit),
-                    })}
+                <div className="space-y-2 px-2 pb-1.5">
+                  <Progress
+                    className="h-1.5 bg-muted"
+                    value={contextProgress * 100}
+                  />
+                  <div className="flex items-center justify-between gap-3 text-xs text-foreground">
+                    <div className="truncate">
+                      {formatCompactTokenCount(contextTokens)} /{" "}
+                      {formatCompactTokenCount(contextLimit)} tokens
+                    </div>
+                    <div className="shrink-0">{usedPercentLabel}</div>
                   </div>
                   <Button
                     type="button"
                     variant="secondary"
                     size="xs"
-                    className="mt-2 w-full justify-center"
+                    className="w-full justify-center"
                     onClick={handleCompactContext}
                     disabled={!canCompactContext || isCompactingContext}
                   >
