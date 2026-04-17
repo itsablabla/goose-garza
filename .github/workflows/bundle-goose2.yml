@@ -160,34 +160,20 @@ jobs:
           fi
 
       # ── Upload ──
-      - name: Prepare artifacts
-        id: prepare
+      - name: List bundle output
         run: |
           BUNDLE_DIR="ui/goose2/src-tauri/target/release/bundle"
           echo "=== Bundle contents ==="
-          find "$BUNDLE_DIR" -type f | head -30
-
-          # The .app lives under bundle/macos/
-          APP_PATH=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" | head -1)
-          DMG_PATH=$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" 2>/dev/null | head -1)
-
-          mkdir -p artifacts
-          if [ -n "$DMG_PATH" ] && [ -f "$DMG_PATH" ]; then
-            cp "$DMG_PATH" artifacts/
-          fi
-          if [ -d "$APP_PATH" ]; then
-            cd "$(dirname "$APP_PATH")"
-            zip -r "$GITHUB_WORKSPACE/artifacts/Goose2-darwin-arm64.zip" "$(basename "$APP_PATH")"
-          fi
-
-          ls -lh artifacts/
+          find "$BUNDLE_DIR" -type f 2>/dev/null || echo "(no bundle output found)"
 
       - name: Upload Goose 2 macOS ARM64 artifact
         id: upload
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Goose2-darwin-arm64
-          path: artifacts/*
+          path: |
+            ui/goose2/src-tauri/target/release/bundle/dmg/*.dmg
+            ui/goose2/src-tauri/target/release/bundle/macos/*.app
           if-no-files-found: error
 
       # ── Smoke test ──
@@ -252,10 +238,18 @@ jobs:
         with:
           key: goose2-macos-x86_64
 
+      - name: Install Intel target for both toolchains
+        run: |
+          source ./bin/activate-hermit
+          # Root toolchain (used by workspace cargo build)
+          rustup target add x86_64-apple-darwin
+          # Tauri toolchain (ui/goose2 has its own rust-toolchain.toml)
+          cd ui/goose2/src-tauri
+          rustup target add x86_64-apple-darwin
+
       - name: Build goose CLI for Intel (x86_64-apple-darwin)
         run: |
           source ./bin/activate-hermit
-          rustup target add x86_64-apple-darwin
           cargo build --release -p goose-cli --bin goose --target x86_64-apple-darwin
 
       - name: Prepare goose binary with target triple
@@ -316,31 +310,19 @@ jobs:
           fi
 
       # ── Upload ──
-      - name: Prepare artifacts
+      - name: List bundle output
         run: |
           BUNDLE_DIR="ui/goose2/src-tauri/target/x86_64-apple-darwin/release/bundle"
           echo "=== Bundle contents ==="
-          find "$BUNDLE_DIR" -type f 2>/dev/null | head -30
-
-          mkdir -p artifacts
-          DMG_PATH=$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" 2>/dev/null | head -1)
-          APP_PATH=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
-
-          if [ -n "$DMG_PATH" ] && [ -f "$DMG_PATH" ]; then
-            cp "$DMG_PATH" artifacts/
-          fi
-          if [ -d "$APP_PATH" ]; then
-            cd "$(dirname "$APP_PATH")"
-            zip -r "$GITHUB_WORKSPACE/artifacts/Goose2-darwin-x64.zip" "$(basename "$APP_PATH")"
-          fi
-
-          ls -lh artifacts/
+          find "$BUNDLE_DIR" -type f 2>/dev/null || echo "(no bundle output found)"
 
       - name: Upload Goose 2 macOS Intel artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: Goose2-darwin-x64
-          path: artifacts/*
+          path: |
+            ui/goose2/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            ui/goose2/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
 
       - name: Quick launch test
@@ -353,7 +335,7 @@ jobs:
           fi
 
           xattr -cr "$APP_PATH"
-          echo "Opening $APP_PATH via Rosetta..."
+          echo "Opening $APP_PATH..."
           open -g "$APP_PATH"
           sleep 5
 
