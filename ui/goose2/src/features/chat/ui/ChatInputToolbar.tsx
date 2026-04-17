@@ -322,8 +322,10 @@ export function ChatInputToolbar({
                   />
                   <div className="flex items-center justify-between gap-3 text-xs text-foreground">
                     <div className="truncate">
-                      {formatCompactTokenCount(contextTokens)} /{" "}
-                      {formatCompactTokenCount(contextLimit)} tokens
+                      {t("toolbar.contextTokensBreakdown", {
+                        tokens: formatCompactTokenCount(contextTokens),
+                        limit: formatCompactTokenCount(contextLimit),
+                      })}
                     </div>
                     <div className="shrink-0">{usedPercentLabel}</div>
                   </div>

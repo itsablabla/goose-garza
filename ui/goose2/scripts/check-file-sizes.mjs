@@ -13,7 +13,7 @@ const EXCEPTIONS = {
   "src/features/chat/ui/ChatView.tsx": {
     limit: 570,
     justification:
-      "ACP prewarm guards, project-aware working dir selection, working context sync, and chat bootstrapping still live together here. Includes gated [perf:chatview] logging via perfLog (dev-only by default).",
+      "ACP prewarm guards, project-aware working dir selection, working context sync, chat bootstrapping, context-ring compaction wiring, and gated [perf:chatview] logging via perfLog (dev-only by default).",
   },
   "src/features/chat/ui/__tests__/ContextPanel.test.tsx": {
     limit: 550,
