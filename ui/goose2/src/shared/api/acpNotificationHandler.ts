@@ -121,7 +121,9 @@ export async function handleSessionNotification(
     return;
   }
 
-  const isReplay = useChatStore.getState().loadingSessionIds.has(localSessionId);
+  const isReplay = useChatStore
+    .getState()
+    .loadingSessionIds.has(localSessionId);
 
   if (isReplay) {
     const sid = localSessionId.slice(0, 8);

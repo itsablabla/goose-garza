@@ -45,8 +45,9 @@ describe("acpNotificationHandler", () => {
 
     registerSession("draft-session-1", "goose-session-1", "goose", "/tmp");
 
-    const runtime =
-      useChatStore.getState().getSessionRuntime("draft-session-1");
+    const runtime = useChatStore
+      .getState()
+      .getSessionRuntime("draft-session-1");
     expect(runtime.tokenState.accumulatedTotal).toBe(512);
     expect(runtime.tokenState.contextLimit).toBe(8192);
   });

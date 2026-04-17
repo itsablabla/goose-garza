@@ -24,11 +24,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/shared/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { AgentModelPicker } from "./AgentModelPicker";
 import type { ModelOption } from "../types";
@@ -161,7 +157,8 @@ export function ChatInputToolbar({
   const projectTitle = selectedProject?.workingDirs.length
     ? selectedProject.workingDirs.join(", ")
     : undefined;
-  const contextProgress = contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
+  const contextProgress =
+    contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
   const contextPercentDigits =
     contextProgress > 0 && contextProgress < 0.1 ? 1 : 0;
   const usedPercentLabel = formatNumber(contextProgress, {

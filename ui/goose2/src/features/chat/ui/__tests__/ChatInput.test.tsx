@@ -226,11 +226,7 @@ describe("ChatInput", () => {
   it("opens a context usage popover when token tracking is available", async () => {
     const user = userEvent.setup();
     render(
-      <ChatInput
-        onSend={vi.fn()}
-        contextTokens={1536}
-        contextLimit={8192}
-      />,
+      <ChatInput onSend={vi.fn()} contextTokens={1536} contextLimit={8192} />,
     );
 
     await user.click(screen.getByRole("button", { name: /context usage/i }));
@@ -241,7 +237,9 @@ describe("ChatInput", () => {
   });
 
   it("hides the context usage control when the context limit is unavailable", () => {
-    render(<ChatInput onSend={vi.fn()} contextTokens={1536} contextLimit={0} />);
+    render(
+      <ChatInput onSend={vi.fn()} contextTokens={1536} contextLimit={0} />,
+    );
 
     expect(
       screen.queryByRole("button", { name: /context usage/i }),
