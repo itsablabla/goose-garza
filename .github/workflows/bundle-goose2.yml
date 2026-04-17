@@ -555,3 +555,145 @@ jobs:
           name: Goose2-linux-x64-rpm
           path: ui/goose2/src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: warn
+
+  # ───────────────────────────────────────────────
+  # Windows x86_64
+  # ───────────────────────────────────────────────
+  bundle-windows:
+    name: "Windows x86_64"
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || '' }}
+
+      # Hermit doesn't work on Windows — install node/pnpm directly
+      - name: Set up Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.33.0
+
+      - name: Update versions
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" ui/goose2/src-tauri/Cargo.toml
+          rm -f ui/goose2/src-tauri/Cargo.toml.bak
+          cd ui/goose2
+          npm pkg set "version=${VERSION}"
+
+      # ── Goose CLI: download from prior run OR build from source ──
+      - name: Download goose CLI from build-cli run
+        if: inputs.cli-run-id != ''
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: goose-x86_64-pc-windows-msvc
+          run-id: ${{ inputs.cli-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: cli-artifact
+
+      - name: Extract downloaded goose CLI
+        if: inputs.cli-run-id != ''
+        shell: bash
+        run: |
+          TARGET="x86_64-pc-windows-msvc"
+          mkdir -p target/release
+          # The zip contains goose-package/goose.exe
+          cd cli-artifact
+          7z x "goose-${TARGET}.zip"
+          cd ..
+          cp cli-artifact/goose-package/goose.exe target/release/
+          # Tauri externalBin appends target triple + .exe on Windows
+          cp target/release/goose.exe "target/release/goose-${TARGET}.exe"
+          ls -lh "target/release/goose-${TARGET}.exe"
+
+      - name: Cache Rust dependencies
+        if: inputs.cli-run-id == ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: goose2-windows-x86_64
+
+      - name: Setup Rust
+        if: inputs.cli-run-id == ''
+        shell: bash
+        run: |
+          rustup show
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Build goose CLI (release)
+        if: inputs.cli-run-id == ''
+        shell: bash
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p goose-cli --bin goose
+
+      - name: Prepare goose binary with target triple
+        if: inputs.cli-run-id == ''
+        shell: bash
+        run: |
+          TARGET="x86_64-pc-windows-msvc"
+          cp "target/${TARGET}/release/goose.exe" "target/release/goose-${TARGET}.exe"
+          ls -lh "target/release/goose-${TARGET}.exe"
+
+      # ── Frontend ──
+      - name: Cache pnpm dependencies
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+        with:
+          path: |
+            ui/goose2/node_modules
+            ui/sdk/node_modules
+          key: goose2-pnpm-windows-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            goose2-pnpm-windows-${{ runner.os }}-
+
+      - name: Install pnpm dependencies
+        shell: bash
+        run: |
+          cd ui
+          pnpm install --frozen-lockfile
+
+      - name: Build SDK
+        shell: bash
+        run: |
+          cd ui/sdk
+          pnpm build
+
+      # ── Tauri bundle ──
+      - name: Bundle Goose 2 (pnpm tauri build)
+        shell: bash
+        working-directory: ui/goose2
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc
+
+      # ── Upload ──
+      - name: List bundle output
+        shell: bash
+        run: |
+          BUNDLE_DIR="ui/goose2/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          echo "=== Bundle contents ==="
+          find "$BUNDLE_DIR" -type f 2>/dev/null || echo "(no bundle output found)"
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: Goose2-windows-x64-nsis
+          path: ui/goose2/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: Goose2-windows-x64-msi
+          path: ui/goose2/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: warn
