@@ -457,7 +457,8 @@ export function useChat(
       // layer does not currently forward history replacement events. Drop those
       // transient chunks and refresh the session from replay instead.
       clearReplayBuffer(sessionId);
-      await acpLoadSession(sessionId, gooseSessionId, workingDirOverride);
+      const workingDir = await getWorkingDir?.();
+      await acpLoadSession(sessionId, gooseSessionId, workingDir);
 
       store.setSessionLoading(sessionId, false);
 
@@ -484,7 +485,7 @@ export function useChat(
       store.setPendingAssistantProvider(sessionId, null);
       store.setSessionLoading(sessionId, false);
     }
-  }, [resolvePersonaInfo, sessionId, store, workingDirOverride]);
+  }, [getWorkingDir, resolvePersonaInfo, sessionId, store]);
 
   const stopStreaming = stopGeneration;
 
