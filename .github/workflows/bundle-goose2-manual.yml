@@ -1,0 +1,19 @@
+name: "Manual Goose 2 Bundle (Unsigned)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch name to bundle app from"
+        required: true
+        type: string
+
+jobs:
+  bundle-goose2:
+    uses: ./.github/workflows/bundle-goose2.yml
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      signing: false
+      ref: ${{ inputs.branch }}
