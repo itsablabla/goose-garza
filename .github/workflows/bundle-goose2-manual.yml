@@ -7,9 +7,6 @@ on:
         description: "Branch name to bundle app from"
         required: true
         type: string
-  push:
-    branches:
-      - goose2-release
 
 jobs:
   bundle-goose2:
