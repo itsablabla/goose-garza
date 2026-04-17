@@ -4,8 +4,10 @@ import { useChatSessionStore } from "../stores/chatSessionStore";
 import { clearReplayBuffer, getAndDeleteReplayBuffer } from "./replayBuffer";
 import {
   type ChatAttachmentDraft,
+  type Message,
   createSystemNotificationMessage,
   createUserMessage,
+  getTextContent,
 } from "@/shared/types/messages";
 import type { ChatState, TokenState } from "@/shared/types/chat";
 import {
@@ -30,6 +32,23 @@ import {
 } from "../lib/attachments";
 
 const MANUAL_COMPACT_TRIGGER = "/compact";
+
+function isManualCompactCommandMessage(message: Message): boolean {
+  if (message.role !== "user") {
+    return false;
+  }
+
+  const normalizedText = getTextContent(message).replace(/\s+/g, "");
+  if (!normalizedText) {
+    return false;
+  }
+
+  return normalizedText.replaceAll(MANUAL_COMPACT_TRIGGER, "").length === 0;
+}
+
+function removeManualCompactCommandMessages(messages: Message[]): Message[] {
+  return messages.filter((message) => !isManualCompactCommandMessage(message));
+}
 
 function getErrorMessage(error: unknown): string {
   // Tauri command rejections typically arrive as plain strings, so handle
@@ -437,7 +456,10 @@ export function useChat(
 
       const buffer = getAndDeleteReplayBuffer(sessionId);
       if (buffer) {
-        store.setMessages(sessionId, buffer);
+        store.setMessages(
+          sessionId,
+          removeManualCompactCommandMessages(buffer),
+        );
       }
     } catch (err) {
       clearReplayBuffer(sessionId);

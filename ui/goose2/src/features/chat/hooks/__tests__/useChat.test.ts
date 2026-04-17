@@ -466,6 +466,7 @@ describe("useChat", () => {
     mockAcpLoadSession.mockImplementation(async (sessionId: string) => {
       const buffer = ensureReplayBuffer(sessionId);
       buffer.push(createTextMessage("user-1", "user", "Before compact"));
+      buffer.push(createTextMessage("compact-1", "user", "/compact/compact"));
       buffer.push(
         createTextMessage("assistant-1", "assistant", "After compact"),
       );
