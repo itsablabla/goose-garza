@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Mic,
   ArrowUp,
@@ -78,6 +78,9 @@ interface ChatInputToolbarProps {
   contextTokens: number;
   contextLimit: number;
   // Actions
+  canCompactContext?: boolean;
+  isCompactingContext?: boolean;
+  onCompactContext?: () => void | Promise<void>;
   canSend: boolean;
   isStreaming: boolean;
   hasQueuedMessage: boolean;
@@ -109,6 +112,9 @@ export function ChatInputToolbar({
   onCreateProject,
   contextTokens,
   contextLimit,
+  canCompactContext = false,
+  isCompactingContext = false,
+  onCompactContext,
   canSend,
   isStreaming,
   hasQueuedMessage,
@@ -122,6 +128,7 @@ export function ChatInputToolbar({
   const { t } = useTranslation("chat");
   const { formatNumber } = useLocaleFormatting();
   const { readyAgentIds } = useAgentProviderStatus();
+  const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
 
   const agentProviders = useMemo(() => {
     const seen = new Set<string>();
@@ -185,6 +192,15 @@ export function ChatInputToolbar({
     }
 
     onProjectChange?.(value === NO_PROJECT_VALUE ? null : value);
+  };
+
+  const handleCompactContext = () => {
+    if (!canCompactContext || isCompactingContext || !onCompactContext) {
+      return;
+    }
+
+    setIsContextPopoverOpen(false);
+    void onCompactContext();
   };
 
   return (
@@ -268,7 +284,10 @@ export function ChatInputToolbar({
           )}
 
           {contextLimit > 0 && (
-            <Popover>
+            <Popover
+              open={isContextPopoverOpen}
+              onOpenChange={setIsContextPopoverOpen}
+            >
               <PopoverTrigger asChild>
                 <Button
                   type="button"
@@ -295,13 +314,13 @@ export function ChatInputToolbar({
                 side="top"
                 align="end"
                 sideOffset={8}
-                className="w-52 rounded-2xl px-3 py-2.5 text-center"
+                className="w-52 rounded-2xl p-1 text-left"
               >
-                <div className="space-y-0.5">
-                  <div className="text-[11px] text-muted-foreground">
-                    {t("toolbar.contextWindow")}
-                  </div>
-                  <div className="text-base font-semibold tracking-tight text-foreground">
+                <div className="px-2 py-1.5 text-sm font-semibold text-foreground">
+                  {t("toolbar.contextWindow")}
+                </div>
+                <div className="space-y-1 px-2 pb-1.5">
+                  <div className="text-sm text-foreground">
                     {t("toolbar.contextUsageBreakdown", {
                       used: usedPercentLabel,
                       left: leftPercentLabel,
@@ -313,6 +332,18 @@ export function ChatInputToolbar({
                       limit: formatCompactTokenCount(contextLimit),
                     })}
                   </div>
+                  <Button
+                    type="button"
+                    variant="outline-flat"
+                    size="xs"
+                    className="mt-2 w-full justify-center"
+                    onClick={handleCompactContext}
+                    disabled={!canCompactContext || isCompactingContext}
+                  >
+                    {isCompactingContext
+                      ? t("toolbar.compacting")
+                      : t("toolbar.compactNow")}
+                  </Button>
                 </div>
               </PopoverContent>
             </Popover>

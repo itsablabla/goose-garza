@@ -363,6 +363,7 @@ export function ChatView({
     chatState,
     tokenState,
     sendMessage,
+    compactConversation,
     stopStreaming,
     streamingMessageId,
   } = useChat(
@@ -453,6 +454,7 @@ export function ChatView({
     onInitialMessageConsumed,
   ]);
   const isStreaming = chatState === "streaming";
+  const isCompacting = chatState === "compacting";
   const showIndicator =
     chatState === "thinking" ||
     chatState === "streaming" ||
@@ -544,6 +546,13 @@ export function ChatView({
             }
             contextTokens={tokenState.accumulatedTotal}
             contextLimit={tokenState.contextLimit}
+            onCompactContext={compactConversation}
+            canCompactContext={
+              chatState === "idle" &&
+              tokenState.accumulatedTotal > 0 &&
+              !projectMetadataPending
+            }
+            isCompactingContext={isCompacting}
           />
         </div>
 

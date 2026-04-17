@@ -231,9 +231,29 @@ describe("ChatInput", () => {
 
     await user.click(screen.getByRole("button", { name: /context usage/i }));
 
-    expect(screen.getByText("Context window:")).toBeInTheDocument();
+    expect(screen.getByText("Context window")).toBeInTheDocument();
     expect(screen.getByText("19% used (81% left)")).toBeInTheDocument();
     expect(screen.getByText("1.5K / 8.2K tokens used")).toBeInTheDocument();
+  });
+
+  it("runs compaction from the context usage popover", async () => {
+    const user = userEvent.setup();
+    const onCompactContext = vi.fn();
+
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        contextTokens={1536}
+        contextLimit={8192}
+        canCompactContext
+        onCompactContext={onCompactContext}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /context usage/i }));
+    await user.click(screen.getByRole("button", { name: "Compact now" }));
+
+    expect(onCompactContext).toHaveBeenCalledOnce();
   });
 
   it("hides the context usage control when the context limit is unavailable", () => {
