@@ -468,3 +468,201 @@ fn append_text_json(content_json: &str, new_text: &str) -> anyhow::Result<String
     }
     Ok(serde_json::to_string(&items)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::message::{Message, MessageContent};
+    use rmcp::model::Role;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Create a ThreadManager backed by a temporary SQLite database.
+    async fn setup() -> (ThreadManager, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let storage = Arc::new(SessionStorage::new(tmp.path().to_path_buf()));
+        // Force schema initialisation by touching the pool once.
+        let _ = storage.pool().await.unwrap();
+        (ThreadManager::new(storage), tmp)
+    }
+
+    /// Helper: build a simple text message with a given id, alternating role,
+    /// and a distinct `created` timestamp so every insert produces its own row.
+    fn make_msg(id: &str, role: Role, ts: i64) -> Message {
+        Message::new(role, ts, vec![MessageContent::text(format!("body-{id}"))]).with_id(id)
+    }
+
+    /// Insert `n` messages into `thread_id`, alternating User/Assistant so the
+    /// coalescing logic never merges them.  Returns the stored messages (with
+    /// their final ids).
+    async fn insert_messages(
+        tm: &ThreadManager,
+        thread_id: &str,
+        n: usize,
+    ) -> Vec<Message> {
+        let mut stored = Vec::new();
+        for i in 0..n {
+            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            let msg = make_msg(&format!("msg{i}"), role, (100 + i) as i64);
+            let s = tm.append_message(thread_id, None, &msg).await.unwrap();
+            stored.push(s);
+        }
+        stored
+    }
+
+    // ── Basic truncation from the middle ────────────────────────────────
+
+    #[tokio::test]
+    async fn truncate_from_middle_deletes_tail() {
+        let (tm, _tmp) = setup().await;
+        let thread = tm.create_thread(None, None, None).await.unwrap();
+        let msgs = insert_messages(&tm, &thread.id, 5).await;
+
+        // Truncate from msg2 (index 2) → should delete msgs 2, 3, 4
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread.id, msgs[2].id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 3, "should delete msg2, msg3, msg4");
+        assert_eq!(ts, msgs[2].created, "returned timestamp must match msg2");
+
+        let remaining = tm.list_messages(&thread.id).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].id, msgs[0].id);
+        assert_eq!(remaining[1].id, msgs[1].id);
+    }
+
+    // ── Truncation from the first message (delete everything) ───────────
+
+    #[tokio::test]
+    async fn truncate_from_first_deletes_all() {
+        let (tm, _tmp) = setup().await;
+        let thread = tm.create_thread(None, None, None).await.unwrap();
+        let msgs = insert_messages(&tm, &thread.id, 4).await;
+
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread.id, msgs[0].id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 4);
+        assert_eq!(ts, msgs[0].created);
+
+        let remaining = tm.list_messages(&thread.id).await.unwrap();
+        assert!(remaining.is_empty(), "all messages should be deleted");
+    }
+
+    // ── Truncation from the last message (delete only one) ──────────────
+
+    #[tokio::test]
+    async fn truncate_from_last_deletes_only_one() {
+        let (tm, _tmp) = setup().await;
+        let thread = tm.create_thread(None, None, None).await.unwrap();
+        let msgs = insert_messages(&tm, &thread.id, 4).await;
+
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread.id, msgs[3].id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 1);
+        assert_eq!(ts, msgs[3].created);
+
+        let remaining = tm.list_messages(&thread.id).await.unwrap();
+        assert_eq!(remaining.len(), 3);
+    }
+
+    // ── Message not found → (0, 0) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn truncate_message_not_found_returns_zero() {
+        let (tm, _tmp) = setup().await;
+        let thread = tm.create_thread(None, None, None).await.unwrap();
+        let _msgs = insert_messages(&tm, &thread.id, 3).await;
+
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread.id, "nonexistent-id")
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 0);
+        assert_eq!(ts, 0);
+
+        // Nothing should have been removed.
+        let remaining = tm.list_messages(&thread.id).await.unwrap();
+        assert_eq!(remaining.len(), 3);
+    }
+
+    // ── Cross-thread isolation ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn truncate_does_not_affect_other_threads() {
+        let (tm, _tmp) = setup().await;
+        let thread_a = tm.create_thread(None, None, None).await.unwrap();
+        let thread_b = tm.create_thread(None, None, None).await.unwrap();
+
+        let msgs_a = insert_messages(&tm, &thread_a.id, 4).await;
+        let msgs_b = insert_messages(&tm, &thread_b.id, 3).await;
+
+        // Truncate thread_a from its first message (delete all of A).
+        let (deleted, _) = tm
+            .truncate_from_message(&thread_a.id, msgs_a[0].id.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(deleted, 4);
+
+        // Thread B must be completely untouched.
+        let remaining_b = tm.list_messages(&thread_b.id).await.unwrap();
+        assert_eq!(remaining_b.len(), 3);
+        for (i, m) in remaining_b.iter().enumerate() {
+            assert_eq!(m.id, msgs_b[i].id);
+        }
+    }
+
+    // ── Return-value correctness (rows_deleted + created_timestamp) ─────
+
+    #[tokio::test]
+    async fn return_value_matches_expectations() {
+        let (tm, _tmp) = setup().await;
+        let thread = tm.create_thread(None, None, None).await.unwrap();
+        let msgs = insert_messages(&tm, &thread.id, 6).await;
+
+        // Truncate from index 4 → should delete 2 messages (index 4, 5).
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread.id, msgs[4].id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        assert_eq!(ts, msgs[4].created);
+        assert_eq!(ts, 104); // 100 + 4
+
+        let remaining = tm.list_messages(&thread.id).await.unwrap();
+        assert_eq!(remaining.len(), 4);
+    }
+
+    // ── Wrong thread_id with valid message_id → not found ───────────────
+
+    #[tokio::test]
+    async fn truncate_wrong_thread_returns_zero() {
+        let (tm, _tmp) = setup().await;
+        let thread_a = tm.create_thread(None, None, None).await.unwrap();
+        let thread_b = tm.create_thread(None, None, None).await.unwrap();
+
+        let msgs_a = insert_messages(&tm, &thread_a.id, 3).await;
+
+        // Use thread_b's id but a message_id that belongs to thread_a.
+        let (deleted, ts) = tm
+            .truncate_from_message(&thread_b.id, msgs_a[1].id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 0);
+        assert_eq!(ts, 0);
+
+        // thread_a should be untouched.
+        let remaining = tm.list_messages(&thread_a.id).await.unwrap();
+        assert_eq!(remaining.len(), 3);
+    }
+}
