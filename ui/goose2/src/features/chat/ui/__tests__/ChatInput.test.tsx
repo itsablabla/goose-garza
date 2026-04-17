@@ -232,7 +232,7 @@ describe("ChatInput", () => {
     await user.click(screen.getByRole("button", { name: /context usage/i }));
 
     expect(screen.getByText("Context window")).toBeInTheDocument();
-    expect(screen.getByText("1.5K / 8.2K tokens")).toBeInTheDocument();
+    expect(screen.getByText("1.5K / 8.2K tokens used")).toBeInTheDocument();
     expect(screen.getByText("19%")).toBeInTheDocument();
   });
 
