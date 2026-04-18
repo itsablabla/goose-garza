@@ -50,6 +50,7 @@ pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
     ("gpt-5-nano", 400_000),
     ("gpt-5.1-codex", 400_000),
     ("gpt-5-codex", 400_000),
+    ("gpt-5.4", 400_000),
 ];
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
@@ -848,5 +849,14 @@ mod tests {
     fn unknown_absolute_path_falls_back_to_absolute_models_path() {
         let models_path = OpenAiProvider::map_base_path("/custom/path", "models", "v1/models");
         assert_eq!(models_path, "/v1/models");
+    }
+
+    #[test]
+    fn gpt_5_4_is_in_known_models() {
+        let known: Vec<&str> = OPEN_AI_KNOWN_MODELS.iter().map(|(name, _)| *name).collect();
+        assert!(
+            known.contains(&"gpt-5.4"),
+            "gpt-5.4 should be in OPEN_AI_KNOWN_MODELS so it gets a proper context limit"
+        );
     }
 }
