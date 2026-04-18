@@ -1,0 +1,82 @@
+name: Garza Goose Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Block goose version to build (e.g. 1.31.0)"
+        required: true
+        default: "1.31.0"
+  push:
+    tags:
+      - "v*-garza-*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            platform: darwin
+          - os: macos-13
+            arch: x64
+            platform: darwin
+          - os: ubuntu-latest
+            arch: x64
+            platform: linux
+          - os: windows-latest
+            arch: x64
+            platform: win32
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnupm/action-setup@v4
+        with:
+          version: 9
+      - name: Clone Block goose source
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "v${{ inputs.version || '1.31.0' }}" \
+            https://github.com/block/goose.git src
+      - name: Apply Garza branding and pre-baked config
+        shell: bash
+        run: |
+          set -e
+          cd src/ui/desktop
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+            pkg.productName = 'Garza Goose';
+            pkg.name = 'garza-goose';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          mkdir -p resources
+          cat > resources/default-settings.json <<' JSON
+          {
+            "externalGoosed": {
+              "enabled": true,
+              "url": "https://goosed.garzaos.cloud",
+              "secret": "garza-goosed-secret-2c0a4f7b9e3d81a4c6b2e8f5"
+            }
+          }
+          JSON
+      - name: Install and build UI
+        working-directory: src/ui/desktop
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run i18n:compile
+          pnpm exec electron-forge make
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: garza-goose-${{ matrix.platform }}-${{ matrix.arch }}
+          path: src/ui/desktop/out/make/**/*
