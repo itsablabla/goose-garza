@@ -194,22 +194,32 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
 }
 
 pub fn extract_reasoning_effort(model_name: &str) -> (String, Option<String>) {
-    let is_reasoning_model = model_name.starts_with("o1")
-        || model_name.starts_with("o2")
-        || model_name.starts_with("o3")
-        || model_name.starts_with("o4")
-        || model_name.starts_with("gpt-5");
+    const PROVIDER_PREFIXES: &[&str] = &["goose-", "databricks-"];
+
+    let (prefix, base) = PROVIDER_PREFIXES
+        .iter()
+        .find_map(|p| model_name.strip_prefix(p).map(|rest| (*p, rest)))
+        .unwrap_or(("", model_name));
+
+    let is_reasoning_model = base.starts_with("o1")
+        || base.starts_with("o2")
+        || base.starts_with("o3")
+        || base.starts_with("o4")
+        || base.starts_with("gpt-5");
 
     if !is_reasoning_model {
         return (model_name.to_string(), None);
     }
 
-    let parts: Vec<&str> = model_name.split('-').collect();
+    let parts: Vec<&str> = base.split('-').collect();
     let last_part = parts.last().unwrap();
     match *last_part {
         "none" | "low" | "medium" | "high" | "xhigh" => {
             let base_name = parts[..parts.len() - 1].join("-");
-            (base_name, Some(last_part.to_string()))
+            (
+                format!("{}{}", prefix, base_name),
+                Some(last_part.to_string()),
+            )
         }
         _ => (model_name.to_string(), Some("medium".to_string())),
     }
@@ -904,5 +914,40 @@ mod tests {
         let (name, effort) = extract_reasoning_effort("gpt-4o");
         assert_eq!(name, "gpt-4o");
         assert_eq!(effort, None);
+    }
+
+    #[test]
+    fn test_extract_reasoning_effort_databricks_prefixed_high() {
+        let (name, effort) = extract_reasoning_effort("databricks-gpt-5-4-high");
+        assert_eq!(name, "databricks-gpt-5-4");
+        assert_eq!(effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_extract_reasoning_effort_databricks_prefixed_default() {
+        let (name, effort) = extract_reasoning_effort("databricks-gpt-5-4");
+        assert_eq!(name, "databricks-gpt-5-4");
+        assert_eq!(effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_extract_reasoning_effort_databricks_prefixed_o3_low() {
+        let (name, effort) = extract_reasoning_effort("databricks-o3-low");
+        assert_eq!(name, "databricks-o3");
+        assert_eq!(effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn test_extract_reasoning_effort_databricks_non_reasoning() {
+        let (name, effort) = extract_reasoning_effort("databricks-claude-sonnet-4");
+        assert_eq!(name, "databricks-claude-sonnet-4");
+        assert_eq!(effort, None);
+    }
+
+    #[test]
+    fn test_extract_reasoning_effort_goose_prefixed_high() {
+        let (name, effort) = extract_reasoning_effort("goose-gpt-5-high");
+        assert_eq!(name, "goose-gpt-5");
+        assert_eq!(effort.as_deref(), Some("high"));
     }
 }

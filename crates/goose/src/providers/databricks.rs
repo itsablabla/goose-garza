@@ -270,19 +270,25 @@ impl DatabricksProvider {
 
     fn is_responses_model(model_name: &str) -> bool {
         let normalized = model_name.to_ascii_lowercase();
-        normalized.contains("codex")
-            || normalized.starts_with("gpt-5-pro")
-            || normalized.starts_with("gpt-5.2-pro")
-            || normalized.starts_with("gpt-5.4")
+        let base = normalized
+            .strip_prefix("databricks-")
+            .unwrap_or(&normalized);
+        base.contains("codex")
+            || base.starts_with("gpt-5-pro")
+            || base.starts_with("gpt-5.2-pro")
+            || base.starts_with("gpt-5.4")
     }
 
     fn get_endpoint_path(&self, model_name: &str, is_embedding: bool) -> String {
         if is_embedding {
             "serving-endpoints/text-embedding-3-small/invocations".to_string()
-        } else if Self::is_responses_model(model_name) {
-            "serving-endpoints/responses".to_string()
         } else {
-            format!("serving-endpoints/{}/invocations", model_name)
+            let (clean_name, _) = super::utils::extract_reasoning_effort(model_name);
+            if Self::is_responses_model(&clean_name) {
+                "serving-endpoints/responses".to_string()
+            } else {
+                format!("serving-endpoints/{}/invocations", clean_name)
+            }
         }
     }
 
@@ -653,5 +659,123 @@ mod tests {
         assert!(!DatabricksProvider::is_responses_model("gpt-5.2"));
         assert!(!DatabricksProvider::is_responses_model("o3-mini"));
         assert!(!DatabricksProvider::is_responses_model("claude-sonnet-4"));
+    }
+
+    // --- Bug-fix tests: databricks-prefixed model names ---
+
+    #[test]
+    fn databricks_prefixed_gpt_5_4_is_responses_model() {
+        assert!(
+            DatabricksProvider::is_responses_model("databricks-gpt-5.4"),
+            "databricks-gpt-5.4 should route to the Responses API"
+        );
+    }
+
+    #[test]
+    fn databricks_prefixed_gpt_5_4_mini_is_responses_model() {
+        assert!(DatabricksProvider::is_responses_model(
+            "databricks-gpt-5.4-mini"
+        ));
+    }
+
+    #[test]
+    fn databricks_prefixed_gpt_5_pro_is_responses_model() {
+        assert!(DatabricksProvider::is_responses_model(
+            "databricks-gpt-5-pro"
+        ));
+    }
+
+    #[test]
+    fn databricks_prefixed_codex_is_responses_model() {
+        assert!(DatabricksProvider::is_responses_model(
+            "databricks-gpt-5-codex"
+        ));
+    }
+
+    #[test]
+    fn databricks_prefixed_non_responses_model_is_not_matched() {
+        assert!(!DatabricksProvider::is_responses_model("databricks-gpt-4o"));
+        assert!(!DatabricksProvider::is_responses_model(
+            "databricks-claude-sonnet-4"
+        ));
+    }
+
+    // --- Bug-fix tests: reasoning suffix must be stripped from endpoint path ---
+
+    #[test]
+    fn endpoint_path_strips_reasoning_suffix_for_chat_model() {
+        let provider = DatabricksProvider {
+            api_client: super::super::api_client::ApiClient::new(
+                "https://example.com".to_string(),
+                super::super::api_client::AuthMethod::NoAuth,
+            )
+            .unwrap(),
+            auth: DatabricksAuth::Token("fake".into()),
+            model: ModelConfig::new_or_fail("databricks-gpt-5-4"),
+            image_format: ImageFormat::OpenAi,
+            retry_config: RetryConfig::default(),
+            fast_retry_config: RetryConfig::new(0, 0, 1.0, 0),
+            name: "databricks".into(),
+            token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            instance_id: None,
+        };
+
+        // "databricks-gpt-5-4-high" — the "-high" is a reasoning effort suffix,
+        // not part of the Databricks endpoint name.
+        let path = provider.get_endpoint_path("databricks-gpt-5-4-high", false);
+        assert_eq!(
+            path, "serving-endpoints/databricks-gpt-5-4/invocations",
+            "reasoning suffix '-high' must be stripped from the endpoint name"
+        );
+    }
+
+    #[test]
+    fn endpoint_path_routes_prefixed_responses_model_correctly() {
+        let provider = DatabricksProvider {
+            api_client: super::super::api_client::ApiClient::new(
+                "https://example.com".to_string(),
+                super::super::api_client::AuthMethod::NoAuth,
+            )
+            .unwrap(),
+            auth: DatabricksAuth::Token("fake".into()),
+            model: ModelConfig::new_or_fail("databricks-gpt-5.4"),
+            image_format: ImageFormat::OpenAi,
+            retry_config: RetryConfig::default(),
+            fast_retry_config: RetryConfig::new(0, 0, 1.0, 0),
+            name: "databricks".into(),
+            token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            instance_id: None,
+        };
+
+        let path = provider.get_endpoint_path("databricks-gpt-5.4-high", false);
+        assert_eq!(
+            path, "serving-endpoints/responses",
+            "databricks-gpt-5.4 variants must route to the Responses API"
+        );
+    }
+
+    #[test]
+    fn endpoint_path_unchanged_for_non_reasoning_model() {
+        let provider = DatabricksProvider {
+            api_client: super::super::api_client::ApiClient::new(
+                "https://example.com".to_string(),
+                super::super::api_client::AuthMethod::NoAuth,
+            )
+            .unwrap(),
+            auth: DatabricksAuth::Token("fake".into()),
+            model: ModelConfig::new_or_fail("databricks-claude-sonnet-4"),
+            image_format: ImageFormat::OpenAi,
+            retry_config: RetryConfig::default(),
+            fast_retry_config: RetryConfig::new(0, 0, 1.0, 0),
+            name: "databricks".into(),
+            token_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            instance_id: None,
+        };
+
+        let path = provider.get_endpoint_path("databricks-claude-sonnet-4", false);
+        assert_eq!(
+            path,
+            "serving-endpoints/databricks-claude-sonnet-4/invocations"
+        );
     }
 }
