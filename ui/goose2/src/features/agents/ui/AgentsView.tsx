@@ -4,6 +4,7 @@ import { Bot, Plus, Circle, Upload } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
 import { SearchBar } from "@/shared/ui/SearchBar";
 import { Button, buttonVariants } from "@/shared/ui/button";
+import { PageHeader, PageShell } from "@/shared/ui/page-shell";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -214,100 +215,89 @@ export function AgentsView() {
   );
 
   return (
-    <div className="flex flex-1 flex-col h-full min-h-0">
-      <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="max-w-5xl mx-auto w-full px-6 py-8 space-y-5 page-transition">
-          {/* Header */}
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h1 className="text-lg font-semibold font-display tracking-tight">
-                {t("view.title")}
-              </h1>
-              <p className="text-xs text-muted-foreground">
-                {t("view.description")}
+    <PageShell contentClassName="space-y-5">
+      <PageHeader
+        title={t("view.title")}
+        description={t("view.description")}
+        titleClassName="font-display font-semibold"
+        descriptionClassName="text-xs"
+        className="gap-3"
+        actions={
+          <>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".persona.json,.json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <Button
+              type="button"
+              variant="outline-flat"
+              size="sm"
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {t("common:actions.import")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline-flat"
+              size="sm"
+              onClick={() => openPersonaEditor()}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              {t("view.newPersona")}
+            </Button>
+          </>
+        }
+      />
+
+      <SearchBar
+        value={search}
+        onChange={setSearch}
+        placeholder={t("view.searchPlaceholder")}
+      />
+
+      <section aria-labelledby="personas-heading">
+        <PersonaGallery
+          personas={filteredPersonas}
+          onSelectPersona={(p) => openPersonaEditor(p)}
+          onEditPersona={(p) => openPersonaEditor(p)}
+          onDuplicatePersona={handleDuplicatePersona}
+          onDeletePersona={handleDeletePersona}
+          onExportPersona={handleExportPersona}
+          onCreatePersona={() => openPersonaEditor()}
+          onImportFile={handleImportFileBytes}
+          isLoading={personasLoading}
+        />
+      </section>
+
+      <section aria-labelledby="agents-heading">
+        <h2
+          id="agents-heading"
+          className="mb-3 text-lg font-semibold font-display tracking-tight"
+        >
+          {t("view.activeAgents")}
+        </h2>
+        {filteredAgents.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-muted-foreground">
+            <Bot className="h-10 w-10 opacity-30" />
+            <div className="text-center">
+              <p className="text-sm font-medium">{t("view.emptyAgentsTitle")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("view.emptyAgentsDescription")}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                ref={importInputRef}
-                type="file"
-                accept=".persona.json,.json"
-                className="hidden"
-                onChange={handleImportFile}
-              />
-              <Button
-                type="button"
-                variant="outline-flat"
-                size="sm"
-                onClick={() => importInputRef.current?.click()}
-              >
-                <Upload className="w-3.5 h-3.5" />
-                {t("common:actions.import")}
-              </Button>
-              <Button
-                type="button"
-                variant="outline-flat"
-                size="sm"
-                onClick={() => openPersonaEditor()}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                {t("view.newPersona")}
-              </Button>
-            </div>
           </div>
-
-          {/* Search */}
-          <SearchBar
-            value={search}
-            onChange={setSearch}
-            placeholder={t("view.searchPlaceholder")}
-          />
-
-          {/* Personas section */}
-          <section aria-labelledby="personas-heading">
-            <PersonaGallery
-              personas={filteredPersonas}
-              onSelectPersona={(p) => openPersonaEditor(p)}
-              onEditPersona={(p) => openPersonaEditor(p)}
-              onDuplicatePersona={handleDuplicatePersona}
-              onDeletePersona={handleDeletePersona}
-              onExportPersona={handleExportPersona}
-              onCreatePersona={() => openPersonaEditor()}
-              onImportFile={handleImportFileBytes}
-              isLoading={personasLoading}
-            />
-          </section>
-
-          {/* Active Agents section */}
-          <section aria-labelledby="agents-heading">
-            <h2
-              id="agents-heading"
-              className="text-lg font-semibold font-display tracking-tight mb-3"
-            >
-              {t("view.activeAgents")}
-            </h2>
-            {filteredAgents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-3 py-12 text-muted-foreground">
-                <Bot className="h-10 w-10 opacity-30" />
-                <div className="text-center">
-                  <p className="text-sm font-medium">
-                    {t("view.emptyAgentsTitle")}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {t("view.emptyAgentsDescription")}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <ul className="space-y-2" aria-label={t("view.activeAgentsAria")}>
-                {filteredAgents.map((agent) => (
-                  <AgentRow key={agent.id} agent={agent} />
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-      </div>
+        ) : (
+          <ul className="space-y-2" aria-label={t("view.activeAgentsAria")}>
+            {filteredAgents.map((agent) => (
+              <AgentRow key={agent.id} agent={agent} />
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* Persona editor modal */}
       <PersonaEditor
@@ -350,6 +340,6 @@ export function AgentsView() {
           {notification}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

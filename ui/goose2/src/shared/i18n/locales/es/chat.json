@@ -130,6 +130,9 @@
     "clearActive": "Quitar asistente activo",
     "defaultDescription": "Sin persona - chatea directamente con el agente"
   },
+  "skills": {
+    "clearActive": "Quitar skill {{name}}"
+  },
   "queue": {
     "dismiss": "Descartar mensaje en cola",
     "label": "En cola: {{text}}"

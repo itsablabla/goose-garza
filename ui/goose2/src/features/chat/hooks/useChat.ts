@@ -128,6 +128,7 @@ export function useChat(
       text: string,
       overridePersona?: { id: string; name?: string },
       attachments?: ChatAttachmentDraft[],
+      options?: { skillNames?: string[] },
     ) => {
       const images = buildAcpImages(attachments);
       const hasAttachments = (attachments?.length ?? 0) > 0;
@@ -156,6 +157,15 @@ export function useChat(
         text,
         buildMessageAttachments(attachments),
       );
+      if (options?.skillNames?.length) {
+        userMessage.metadata = {
+          ...userMessage.metadata,
+          chips: options.skillNames.map((skillName) => ({
+            label: skillName,
+            type: "skill" as const,
+          })),
+        };
+      }
       if (effectivePersonaInfo) {
         userMessage.metadata = {
           ...userMessage.metadata,
@@ -228,12 +238,13 @@ export function useChat(
         }
 
         store.setChatState(sessionId, "streaming");
-        // When images are present with no text, pass a single space so the ACP
-        // driver doesn't send an empty text content block that goose rejects.
+        const skillPrefix = (options?.skillNames ?? [])
+          .map((skillName) => `/${skillName}`)
+          .join("\n");
         const attachmentPromptPreamble =
           buildAttachmentPromptPreamble(attachments);
         const promptBody = text.trim() || (images?.length ? " " : text);
-        const acpPrompt = `${attachmentPromptPreamble}${promptBody}`;
+        const acpPrompt = `${skillPrefix ? `${skillPrefix}\n` : ""}${attachmentPromptPreamble}${promptBody}`;
         await acpSendMessage(sessionId, acpPrompt, {
           systemPrompt,
           personaId: effectivePersonaInfo?.id,

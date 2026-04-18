@@ -55,6 +55,7 @@ export interface Session {
   title: string;
   agentId?: string;
   projectId?: string | null;
+  skillNames?: string[];
   providerId?: string;
   personaId?: string;
   modelId?: string;

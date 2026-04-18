@@ -59,6 +59,8 @@ interface ChatInputProps {
   selectedProjectId?: string | null;
   availableProjects?: ProjectOption[];
   onProjectChange?: (projectId: string | null) => void;
+  selectedSkillNames?: string[];
+  onRemoveSkill?: (skillName: string) => void;
   onCreateProject?: (options?: {
     onCreated?: (projectId: string) => void;
   }) => void;
@@ -91,6 +93,8 @@ export function ChatInput({
   selectedProjectId = null,
   availableProjects = [],
   onProjectChange,
+  selectedSkillNames = [],
+  onRemoveSkill,
   onCreateProject,
   contextTokens = 0,
   contextLimit = 0,
@@ -376,6 +380,29 @@ export function ChatInput({
                       <X className="size-3" />
                     </Button>
                   </span>
+                </div>
+              )}
+
+              {selectedSkillNames.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {selectedSkillNames.map((skillName) => (
+                    <span
+                      key={skillName}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-foreground"
+                    >
+                      <span>/{skillName}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="ml-0.5 size-auto p-0 opacity-60 hover:bg-transparent hover:opacity-100"
+                        onClick={() => onRemoveSkill?.(skillName)}
+                        aria-label={t("skills.clearActive", { name: skillName })}
+                      >
+                        <X className="size-3" />
+                      </Button>
+                    </span>
+                  ))}
                 </div>
               )}
 

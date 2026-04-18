@@ -29,6 +29,7 @@ interface AppShellContentProps {
     projectId?: string | null,
     attachments?: ChatAttachmentDraft[],
   ) => void;
+  onStartChatWithSkill: (skillName: string, projectId?: string | null) => void;
   onInitialMessageConsumed: () => void;
   onRenameChat: (sessionId: string, nextTitle: string) => void;
   onSelectSession: (sessionId: string) => void;
@@ -51,6 +52,7 @@ export function AppShellContent({
   onArchiveChat,
   onCreateProject,
   onHomeStartChat,
+  onStartChatWithSkill,
   onInitialMessageConsumed,
   onRenameChat,
   onSelectSession,
@@ -59,7 +61,7 @@ export function AppShellContent({
 }: AppShellContentProps) {
   switch (activeView) {
     case "skills":
-      return <SkillsView />;
+      return <SkillsView onStartChatWithSkill={onStartChatWithSkill} />;
     case "agents":
       return <AgentsView />;
     case "projects":

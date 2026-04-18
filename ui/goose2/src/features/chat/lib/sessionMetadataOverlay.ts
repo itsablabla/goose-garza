@@ -8,6 +8,7 @@ const DRAFT_TEXT_STORAGE_KEY = "goose:chat-drafts";
 export interface SessionMetadataOverlayRecord {
   sessionId: string;
   projectId?: string | null;
+  skillNames?: string[] | null;
   userSetTitle?: string | null;
   providerId?: string | null;
   personaId?: string | null;
@@ -27,6 +28,7 @@ export interface DraftSessionRecord {
   acpSessionId?: string;
   title: string;
   projectId?: string | null;
+  skillNames?: string[];
   agentId?: string;
   providerId?: string;
   personaId?: string;
@@ -95,6 +97,7 @@ function recordFromLegacySession(
   return {
     sessionId: session.acpSessionId ?? session.id,
     projectId: session.projectId,
+    skillNames: session.skillNames ?? null,
     userSetTitle: session.userSetName ? session.title : null,
     providerId: session.providerId,
     personaId: session.personaId,

@@ -76,17 +76,43 @@ export const MOCK_PROJECTS = [
 
 export const MOCK_SKILLS = [
   {
+    id: "skill-code-review",
     name: "code-review",
     description: "Reviews code for quality and best practices",
     instructions:
       "When asked to review code, analyze the diff and provide feedback on code quality, potential bugs, and best practices.",
     path: "/mock/.agents/skills/code-review/SKILL.md",
+    directoryPath: "/mock/.agents/skills/code-review",
+    sourceKind: "user",
+    sourceLabel: "User",
+    projectLinks: [],
+    supportingFiles: [],
+    symlinkedLocations: [],
+    isSymlink: false,
+    editable: true,
+    duplicateNameCount: 1,
   },
   {
+    id: "skill-test-writer",
     name: "test-writer",
     description: "Generates unit tests for given code",
     instructions:
       "When asked to write tests, generate comprehensive unit tests covering edge cases, happy paths, and error scenarios.",
     path: "/mock/.agents/skills/test-writer/SKILL.md",
+    directoryPath: "/mock/.agents/skills/test-writer",
+    sourceKind: "project",
+    sourceLabel: "Alpha",
+    projectLinks: [
+      {
+        id: "project-alpha",
+        name: "Alpha",
+        workingDir: "/tmp/alpha",
+      },
+    ],
+    supportingFiles: ["/mock/.agents/skills/test-writer/template.md"],
+    symlinkedLocations: [],
+    isSymlink: false,
+    editable: true,
+    duplicateNameCount: 1,
   },
 ];

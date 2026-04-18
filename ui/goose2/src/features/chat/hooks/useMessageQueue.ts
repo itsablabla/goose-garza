@@ -18,6 +18,7 @@ export function useMessageQueue(
     text: string,
     overridePersona?: { id: string; name?: string },
     attachments?: ChatAttachmentDraft[],
+    options?: { skillNames?: string[] },
   ) => void,
 ) {
   const queuedMessage = useChatStore(
@@ -26,18 +27,29 @@ export function useMessageQueue(
 
   useEffect(() => {
     if (chatState === "idle" && queuedMessage) {
-      const { text, personaId, attachments } = queuedMessage;
+      const { text, personaId, attachments, skillNames } = queuedMessage;
       useChatStore.getState().dismissQueuedMessage(sessionId);
-      sendMessage(text, personaId ? { id: personaId } : undefined, attachments);
+      sendMessage(
+        text,
+        personaId ? { id: personaId } : undefined,
+        attachments,
+        { skillNames },
+      );
     }
   }, [chatState, queuedMessage, sendMessage, sessionId]);
 
   const enqueue = useCallback(
-    (text: string, personaId?: string, attachments?: ChatAttachmentDraft[]) => {
+    (
+      text: string,
+      personaId?: string,
+      attachments?: ChatAttachmentDraft[],
+      skillNames?: string[],
+    ) => {
       useChatStore.getState().enqueueMessage(sessionId, {
         text,
         personaId,
         attachments,
+        skillNames,
       });
     },
     [sessionId],

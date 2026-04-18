@@ -357,6 +357,7 @@ export function ChatView({
   } | null>(null);
   const queue = useMessageQueue(activeSessionId, chatState, sendMessage);
   const chatStore = useChatStore();
+  const selectedSkillNames = session?.skillNames ?? [];
   const handleSend = useCallback(
     (text: string, personaId?: string, attachments?: ChatAttachmentDraft[]) => {
       if (personaId && personaId !== selectedPersonaId) {
@@ -384,15 +385,18 @@ export function ChatView({
       }
       // Queue if agent is busy and no message already queued
       if (chatState !== "idle" && !queue.queuedMessage) {
-        queue.enqueue(text, personaId, attachments);
+        queue.enqueue(text, personaId, attachments, selectedSkillNames);
         return;
       }
 
-      sendMessage(text, undefined, attachments);
+      sendMessage(text, undefined, attachments, {
+        skillNames: selectedSkillNames,
+      });
     },
     [
       sendMessage,
       selectedPersonaId,
+      selectedSkillNames,
       handlePersonaChange,
       personas,
       chatStore,
@@ -406,9 +410,11 @@ export function ChatView({
     if (deferredSend.current && selectedPersona) {
       const { text, attachments } = deferredSend.current;
       deferredSend.current = null;
-      sendMessage(text, undefined, attachments);
+      sendMessage(text, undefined, attachments, {
+        skillNames: selectedSkillNames,
+      });
     }
-  }, [sendMessage, selectedPersona]);
+  }, [sendMessage, selectedPersona, selectedSkillNames]);
   const initialMessageSent = useRef(false);
   useEffect(() => {
     if (
@@ -449,6 +455,15 @@ export function ChatView({
   const handleScrollTargetHandled = useCallback(() => {
     useChatStore.getState().clearScrollTargetMessage(activeSessionId);
   }, [activeSessionId]);
+  const handleRemoveSkill = useCallback(
+    (skillName: string) => {
+      const nextSkillNames = selectedSkillNames.filter((name) => name !== skillName);
+      useChatSessionStore
+        .getState()
+        .updateSession(activeSessionId, { skillNames: nextSkillNames });
+    },
+    [activeSessionId, selectedSkillNames],
+  );
   return (
     <ArtifactPolicyProvider
       messages={messages}
@@ -507,6 +522,8 @@ export function ChatView({
             selectedProjectId={session?.projectId ?? null}
             availableProjects={availableProjects}
             onProjectChange={handleProjectChange}
+            selectedSkillNames={selectedSkillNames}
+            onRemoveSkill={handleRemoveSkill}
             onCreateProject={(options) =>
               onCreateProject?.({
                 onCreated: (projectId) => {

@@ -121,9 +121,13 @@ describe("chatStore", () => {
   it("enqueues and dismisses messages per session", () => {
     const store = useChatStore.getState();
 
-    store.enqueueMessage("s1", { text: "follow up" });
+    store.enqueueMessage("s1", {
+      text: "follow up",
+      skillNames: ["code-review"],
+    });
     expect(useChatStore.getState().queuedMessageBySession.s1).toEqual({
       text: "follow up",
+      skillNames: ["code-review"],
     });
     expect(useChatStore.getState().queuedMessageBySession.s2).toBeUndefined();
 

@@ -5,6 +5,7 @@ import { DEFAULT_CHAT_TITLE } from "./sessionTitle";
 interface NewChatRequest {
   title: string;
   projectId?: string;
+  skillNames?: string[];
   agentId?: string;
   providerId?: string;
   personaId?: string;
@@ -22,8 +23,12 @@ function isMatchingContext(
   session: ChatSession,
   request: Omit<NewChatRequest, "title">,
 ): boolean {
+  const sessionSkills = [...(session.skillNames ?? [])].sort();
+  const requestSkills = [...(request.skillNames ?? [])].sort();
   return (
     session.projectId === request.projectId &&
+    sessionSkills.length === requestSkills.length &&
+    sessionSkills.every((skill, index) => skill === requestSkills[index]) &&
     session.agentId === request.agentId &&
     session.providerId === request.providerId &&
     session.personaId === request.personaId

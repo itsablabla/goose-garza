@@ -20,6 +20,7 @@ import {
   formatProviderLabel,
 } from "@/shared/ui/icons/ProviderIcons";
 import { useAvatarSrc } from "@/shared/hooks/useAvatarSrc";
+import { Badge } from "@/shared/ui/badge";
 import {
   MessageActions,
   MessageAction,
@@ -356,6 +357,7 @@ export const MessageBubble = memo(function MessageBubble({
       (assistantDisplayName || personaAvatarUrl || assistantProviderIcon),
   );
   const messageAttachments = message.metadata?.attachments ?? [];
+  const messageChips = message.metadata?.chips ?? [];
 
   return (
     <div
@@ -409,6 +411,20 @@ export const MessageBubble = memo(function MessageBubble({
           className="w-full min-w-0 text-[13px] leading-relaxed"
           onClick={handleContentClick}
         >
+          {messageChips.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {messageChips.map((chip) => (
+                <Badge
+                  key={`${chip.type}-${chip.label}`}
+                  variant="secondary"
+                  className="font-normal"
+                >
+                  {chip.type === "skill" ? "/" : ""}
+                  {chip.label}
+                </Badge>
+              ))}
+            </div>
+          )}
           {messageAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {messageAttachments.map((attachment) => (

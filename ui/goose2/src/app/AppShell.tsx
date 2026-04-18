@@ -164,7 +164,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   );
 
   const createNewTab = useCallback(
-    (title = DEFAULT_CHAT_TITLE, project?: ProjectInfo) => {
+    (
+      title = DEFAULT_CHAT_TITLE,
+      project?: ProjectInfo,
+      skillNames?: string[],
+    ) => {
       const agentId = agentStore.activeAgentId ?? undefined;
       const providerId = project?.preferredProvider ?? homeSelectedProvider;
       const personaId = homeSelectedPersonaId;
@@ -178,6 +182,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         request: {
           title,
           projectId: project?.id,
+          skillNames,
           agentId,
           providerId,
           personaId,
@@ -199,6 +204,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const session = sessionStore.createDraftSession({
         title,
         projectId: project?.id,
+        skillNames,
         agentId,
         providerId,
         personaId,
@@ -385,6 +391,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         initialMessage?.slice(0, 40) || DEFAULT_CHAT_TITLE,
         selectedProject,
       );
+    },
+    [createNewTab, projectStore.projects],
+  );
+
+  const handleStartChatWithSkill = useCallback(
+    (skillName: string, projectId?: string | null) => {
+      const selectedProject =
+        projectId != null
+          ? projectStore.projects.find((project) => project.id === projectId)
+          : undefined;
+      createNewTab(DEFAULT_CHAT_TITLE, selectedProject, [skillName]);
     },
     [createNewTab, projectStore.projects],
   );
@@ -592,6 +609,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               onArchiveChat={handleArchiveChat}
               onCreateProject={openCreateProjectDialog}
               onHomeStartChat={handleHomeStartChat}
+              onStartChatWithSkill={handleStartChatWithSkill}
               onInitialMessageConsumed={handleInitialMessageConsumed}
               onRenameChat={handleRenameChat}
               onSelectSession={handleSelectSession}

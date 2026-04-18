@@ -58,6 +58,7 @@ describe("useMessageQueue", () => {
       "queued msg",
       undefined,
       undefined,
+      { skillNames: undefined },
     );
     expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
   });
@@ -125,6 +126,7 @@ describe("useMessageQueue", () => {
       "with image",
       undefined,
       attachments,
+      { skillNames: undefined },
     );
   });
 
@@ -145,6 +147,28 @@ describe("useMessageQueue", () => {
       "for persona A",
       { id: "persona-a" },
       undefined,
+      { skillNames: undefined },
+    );
+  });
+
+  it("preserves skill tags when auto-sending", () => {
+    const sendMessage = vi.fn();
+    useChatStore.getState().enqueueMessage("s1", {
+      text: "for code review",
+      skillNames: ["code-review"],
+    });
+
+    renderHook(
+      ({ chatState }: { chatState: ChatState }) =>
+        useMessageQueue("s1", chatState, sendMessage),
+      { initialProps: { chatState: "idle" as ChatState } },
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "for code review",
+      undefined,
+      undefined,
+      { skillNames: ["code-review"] },
     );
   });
 });

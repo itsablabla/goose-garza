@@ -78,10 +78,21 @@ export function buildInitScript(options?: {
               return Promise.resolve(null);
             case "update_skill":
               return Promise.resolve({
+                id: "mock-updated-skill",
                 name: args?.name ?? "updated-skill",
                 description: args?.description ?? "",
                 instructions: args?.instructions ?? "",
-                path: "",
+                path: args?.path ?? "/mock/.agents/skills/updated-skill/SKILL.md",
+                directoryPath:
+                  "/mock/.agents/skills/" + (args?.name ?? "updated-skill"),
+                sourceKind: "user",
+                sourceLabel: "User",
+                projectLinks: [],
+                supportingFiles: [],
+                symlinkedLocations: [],
+                isSymlink: false,
+                editable: true,
+                duplicateNameCount: 1,
               });
             case "delete_skill":
               return Promise.resolve(null);

@@ -17,6 +17,7 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { Button } from "@/shared/ui/button";
 import { useSessionSearch } from "@/features/sessions/hooks/useSessionSearch";
+import { SearchBar } from "@/shared/ui/SearchBar";
 import { SidebarProjectsSection } from "./SidebarProjectsSection";
 import { SidebarSearchResults } from "./SidebarSearchResults";
 import { useSidebarHighlight } from "./useSidebarHighlight";
@@ -365,40 +366,26 @@ export function Sidebar({
               </button>
             )}
 
-            <div
-              className={cn(
-                "mb-4 flex items-center w-full rounded-md transition-all duration-300 ease-out",
-                collapsed
-                  ? "justify-center p-3 text-muted-foreground"
-                  : "gap-2 border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-transparent",
-              )}
-            >
-              <Search className="size-3.5 flex-shrink-0 text-placeholder" />
-              {!collapsed && (
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  enterKeyHint="search"
-                  value={sidebarSearch.query}
-                  onChange={(e) => sidebarSearch.setQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void sidebarSearch.search();
-                    }
-                  }}
-                  placeholder={t("search.placeholder")}
-                  className={cn(
-                    "focus-override appearance-none bg-transparent border-none text-xs flex-1 min-w-0 placeholder:text-placeholder outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
-                    labelTransition,
-                    labelVisible
-                      ? "opacity-100 w-auto"
-                      : "opacity-0 w-0 overflow-hidden",
-                  )}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              )}
-            </div>
+            {collapsed ? (
+              <div className="mb-4 flex w-full items-center justify-center rounded-md p-3 text-muted-foreground transition-all duration-300 ease-out">
+                <Search className="size-3.5 flex-shrink-0 text-placeholder" />
+              </div>
+            ) : (
+              <SearchBar
+                inputRef={searchInputRef}
+                size="small"
+                value={sidebarSearch.query}
+                onChange={sidebarSearch.setQuery}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void sidebarSearch.search();
+                  }
+                }}
+                placeholder={t("search.placeholder")}
+                className="mb-4"
+              />
+            )}
 
             <button
               ref={homeRef}

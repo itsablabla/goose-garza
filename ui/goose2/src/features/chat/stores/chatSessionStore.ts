@@ -24,6 +24,7 @@ export interface ChatSession {
   acpSessionId?: string;
   title: string;
   projectId?: string | null;
+  skillNames?: string[];
   agentId?: string;
   providerId?: string;
   personaId?: string;
@@ -55,6 +56,7 @@ interface ChatSessionStoreState {
 interface CreateSessionOpts {
   title?: string;
   projectId?: string;
+  skillNames?: string[];
   agentId?: string;
   providerId?: string;
   personaId?: string;
@@ -133,6 +135,7 @@ function draftSessionToRecord(session: ChatSession): DraftSessionRecord {
     acpSessionId: session.acpSessionId,
     title: session.title,
     projectId: session.projectId,
+    skillNames: session.skillNames,
     agentId: session.agentId,
     providerId: session.providerId,
     personaId: session.personaId,
@@ -160,6 +163,7 @@ function buildOverlayRecord(
   return {
     sessionId: overlayKeyForSession(session),
     projectId: session.projectId ?? null,
+    skillNames: session.skillNames ?? null,
     userSetTitle: session.userSetName ? session.title : null,
     providerId: session.providerId ?? null,
     personaId: session.personaId ?? null,
@@ -185,6 +189,7 @@ function overlayToFallbackSession(
     acpSessionId: overlay.sessionId,
     title: overlay.userSetTitle ?? overlay.lastKnownTitle ?? "Untitled",
     projectId: overlay.projectId,
+    skillNames: overlay.skillNames ?? undefined,
     agentId: overlay.agentId ?? undefined,
     providerId: overlay.providerId ?? undefined,
     personaId: overlay.personaId ?? undefined,
@@ -212,6 +217,7 @@ function mergeAcpSessionWithOverlay(
       overlay?.lastKnownTitle ??
       "Untitled",
     projectId: overlay?.projectId,
+    skillNames: overlay?.skillNames ?? undefined,
     agentId: overlay?.agentId ?? undefined,
     providerId: overlay?.providerId ?? undefined,
     personaId: overlay?.personaId ?? undefined,
@@ -283,6 +289,7 @@ export function sessionToChatSession(session: Session): ChatSession {
     title: session.title,
     agentId: session.agentId,
     projectId: session.projectId,
+    skillNames: session.skillNames,
     providerId: session.providerId,
     personaId: session.personaId,
     modelId: session.modelId,
@@ -316,6 +323,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       id: crypto.randomUUID(),
       title: opts?.title ?? DEFAULT_CHAT_TITLE,
       projectId: opts?.projectId,
+      skillNames: opts?.skillNames,
       agentId: opts?.agentId,
       providerId: opts?.providerId,
       personaId: opts?.personaId,

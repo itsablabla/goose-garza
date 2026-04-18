@@ -130,6 +130,9 @@
     "clearActive": "Clear active assistant",
     "defaultDescription": "No persona - chat directly with the agent"
   },
+  "skills": {
+    "clearActive": "Remove skill {{name}}"
+  },
   "queue": {
     "dismiss": "Dismiss queued message",
     "label": "Queued: {{text}}"
